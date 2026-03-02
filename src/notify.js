@@ -89,6 +89,7 @@ export async function notifyEvent(event, payload) {
   const result = await sendDiscordMessage(config.discordBot, {
     content: message,
     replyToMessageId: payload.replyToMessageId,
+    channelId: payload.channelId,
   });
 
   if (result.success && result.messageId && payload.paneId) {
@@ -98,6 +99,7 @@ export async function notifyEvent(event, payload) {
       sessionId: payload.sessionId,
       tmuxPaneId: payload.paneId,
       tmuxSessionName: payload.tmuxSessionName || '',
+      channelId: payload.channelId || config.discordBot.channelId || '',
       event,
       kind: event === 'approval-request' ? 'approval' : 'chat',
       projectPath: payload.projectPath,

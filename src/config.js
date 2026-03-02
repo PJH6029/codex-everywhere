@@ -67,6 +67,50 @@ function resolveDiscordBotConfig(notifications) {
   };
 }
 
+function resolveDiscordProvisioningConfig(notifications, hasDiscordBot) {
+  const file = notifications?.['discord-bot']?.provisioning;
+
+  const enabled =
+    parseBoolean(process.env.OMX_DISCORD_PROVISION_ENABLED, file?.enabled !== false) &&
+    hasDiscordBot;
+
+  const prefixRaw = typeof process.env.OMX_DISCORD_PROVISION_PREFIX === 'string'
+    ? process.env.OMX_DISCORD_PROVISION_PREFIX
+    : file?.channelPrefix;
+  const channelPrefix = typeof prefixRaw === 'string' ? prefixRaw.trim().toLowerCase() : 'codex-';
+
+  const envCategory = typeof process.env.OMX_DISCORD_PROVISION_CATEGORY_ID === 'string'
+    ? process.env.OMX_DISCORD_PROVISION_CATEGORY_ID.trim()
+    : '';
+  const fileCategory = typeof file?.categoryId === 'string'
+    ? file.categoryId.trim()
+    : '';
+  const categoryIdCandidate = envCategory || fileCategory;
+  const categoryId = /^\d{17,20}$/.test(categoryIdCandidate) ? categoryIdCandidate : '';
+
+  const pollIntervalMs = clampInt(
+    process.env.OMX_DISCORD_PROVISION_POLL_INTERVAL_MS ?? file?.pollIntervalMs,
+    3000,
+    1000,
+    60000,
+  );
+
+  const maxManagedChannels = clampInt(
+    process.env.OMX_DISCORD_PROVISION_MAX_CHANNELS ?? file?.maxManagedChannels,
+    40,
+    1,
+    500,
+  );
+
+  return {
+    enabled,
+    channelPrefix,
+    categoryId,
+    pollIntervalMs,
+    maxManagedChannels,
+  };
+}
+
 function resolveReplyConfig(notifications, hasDiscordBot) {
   const replyRaw = notifications?.reply;
 
@@ -147,12 +191,14 @@ export function loadAppConfig() {
 
   const notificationsEnabled = notifications?.enabled !== false;
   const discordBot = resolveDiscordBotConfig(notifications);
+  const discordProvisioning = resolveDiscordProvisioningConfig(notifications, discordBot.enabled);
   const reply = resolveReplyConfig(notifications, discordBot.enabled);
   const events = notifications?.events || {};
 
   return {
     notificationsEnabled,
     discordBot,
+    discordProvisioning,
     reply,
     events: {
       sessionStart: eventEnabled(events, 'session-start', true),

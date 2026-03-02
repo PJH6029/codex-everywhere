@@ -60,6 +60,10 @@ async function main() {
     process.env.CODEX_EVERYWHERE_TMUX_SESSION ||
     readField(payload, ['tmux_session', 'tmux-session']);
 
+  const channelId =
+    process.env.CODEX_EVERYWHERE_DISCORD_CHANNEL ||
+    readField(payload, ['discord_channel_id', 'discord-channel-id', 'channel_id', 'channel-id']);
+
   const assistantMessage = readField(payload, ['last-assistant-message', 'last_assistant_message']);
   const question = readField(payload, ['question', 'ask-user-question']);
   const inputMessages = readInputMessages(payload);
@@ -83,6 +87,7 @@ async function main() {
       paneId,
       tmuxSessionName,
       projectPath,
+      channelId,
       content: assistantMessage,
     }).catch(() => {});
   }
@@ -93,6 +98,7 @@ async function main() {
       paneId,
       tmuxSessionName,
       projectPath,
+      channelId,
       command: question,
     }).catch(() => {});
   }

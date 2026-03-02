@@ -29,8 +29,15 @@ function tokenCandidates(config) {
   return [primary, fallback];
 }
 
+function resolveChannelId(config, options = {}) {
+  const candidate = typeof options.channelId === 'string' ? options.channelId.trim() : '';
+  if (candidate) return candidate;
+  return String(config.channelId || '').trim();
+}
+
 export async function sendDiscordMessage(config, options) {
-  const { channelId, mention } = config;
+  const { mention } = config;
+  const channelId = resolveChannelId(config, options);
   const tokens = tokenCandidates(config);
 
   if (tokens.length === 0 || !channelId) {
@@ -91,16 +98,18 @@ export async function sendDiscordMessage(config, options) {
   return { success: false, error: lastError };
 }
 
-export async function fetchChannelMessages(config, afterMessageId = null, limit = 20) {
-  const { channelId } = config;
+export async function fetchChannelMessages(config, channelId, afterMessageId = null, limit = 20) {
+  const resolvedChannelId = resolveChannelId(config, { channelId });
   const tokens = tokenCandidates(config);
-  if (tokens.length === 0 || !channelId) return { success: false, error: 'discord_not_configured', messages: [] };
+  if (tokens.length === 0 || !resolvedChannelId) {
+    return { success: false, error: 'discord_not_configured', messages: [] };
+  }
 
   const query = new URLSearchParams();
   query.set('limit', String(Math.max(1, Math.min(100, limit))));
   if (afterMessageId) query.set('after', afterMessageId);
 
-  const url = `https://discord.com/api/v10/channels/${channelId}/messages?${query.toString()}`;
+  const url = `https://discord.com/api/v10/channels/${resolvedChannelId}/messages?${query.toString()}`;
 
   let lastError = 'discord_fetch_failed';
 
@@ -149,12 +158,12 @@ export async function fetchChannelMessages(config, afterMessageId = null, limit 
   return { success: false, error: lastError, messages: [] };
 }
 
-export async function addReaction(config, messageId, emojiEncoded = '%E2%9C%85') {
-  const { channelId } = config;
+export async function addReaction(config, messageId, emojiEncoded = '%E2%9C%85', channelId = '') {
+  const resolvedChannelId = resolveChannelId(config, { channelId });
   const tokens = tokenCandidates(config);
-  if (tokens.length === 0 || !channelId || !messageId) return false;
+  if (tokens.length === 0 || !resolvedChannelId || !messageId) return false;
 
-  const url = `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}/reactions/${emojiEncoded}/@me`;
+  const url = `https://discord.com/api/v10/channels/${resolvedChannelId}/messages/${messageId}/reactions/${emojiEncoded}/@me`;
 
   for (let idx = 0; idx < tokens.length; idx += 1) {
     try {
@@ -177,4 +186,84 @@ export async function addReaction(config, messageId, emojiEncoded = '%E2%9C%85')
   }
 
   return false;
+}
+
+export async function getDiscordChannel(config, channelId) {
+  const resolvedChannelId = resolveChannelId(config, { channelId });
+  const tokens = tokenCandidates(config);
+  if (!resolvedChannelId || tokens.length === 0) {
+    return { success: false, error: 'discord_not_configured' };
+  }
+
+  const url = `https://discord.com/api/v10/channels/${resolvedChannelId}`;
+
+  let lastError = 'discord_fetch_channel_failed';
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: authHeaders(tokens[idx]),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        lastError = `discord_http_${response.status}`;
+        if (response.status === 401 && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError };
+      }
+
+      const channel = await response.json().catch(() => null);
+      return { success: true, channel, usedFallbackToken: idx > 0 };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_fetch_channel_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError };
+    }
+  }
+
+  return { success: false, error: lastError };
+}
+
+export async function listGuildTextChannels(config, guildId) {
+  const resolvedGuildId = String(guildId || '').trim();
+  const tokens = tokenCandidates(config);
+  if (!resolvedGuildId || tokens.length === 0) {
+    return { success: false, error: 'discord_not_configured', channels: [] };
+  }
+
+  const url = `https://discord.com/api/v10/guilds/${resolvedGuildId}/channels`;
+  let lastError = 'discord_list_channels_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: authHeaders(tokens[idx]),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        lastError = `discord_http_${response.status}`;
+        if (response.status === 401 && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError, channels: [] };
+      }
+
+      const channels = await response.json().catch(() => []);
+      const textChannels = Array.isArray(channels)
+        ? channels.filter((channel) => channel?.type === 0 && typeof channel?.id === 'string')
+        : [];
+
+      return {
+        success: true,
+        channels: textChannels,
+        usedFallbackToken: idx > 0,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_list_channels_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError, channels: [] };
+    }
+  }
+
+  return { success: false, error: lastError, channels: [] };
 }

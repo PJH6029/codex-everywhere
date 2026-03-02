@@ -40,7 +40,7 @@ function codexInstalled() {
   return !result.error && result.status === 0;
 }
 
-function buildRunnerCommand(sessionId, cwd, passthroughArgs = []) {
+function buildRunnerCommand(sessionId, cwd, channelId = '', passthroughArgs = []) {
   const runCodexPath = fileURLToPath(new URL('./run-codex.js', import.meta.url));
 
   const tokens = [
@@ -50,6 +50,8 @@ function buildRunnerCommand(sessionId, cwd, passthroughArgs = []) {
     sessionId,
     '--cwd',
     cwd,
+    '--channel-id',
+    channelId,
     '--',
     ...passthroughArgs,
   ];
@@ -123,7 +125,8 @@ async function runSession(codexArgs) {
 
   const cwd = process.cwd();
   const sessionId = randomUUID();
-  const runnerCommand = buildRunnerCommand(sessionId, cwd, codexArgs);
+  const channelId = config.discordBot.channelId;
+  const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId, codexArgs);
 
   let tmuxSessionName = '';
   let paneId = '';
@@ -147,6 +150,7 @@ async function runSession(codexArgs) {
     sessionId,
     paneId,
     tmuxSessionName,
+    channelId,
     projectPath: cwd,
     startedAt: new Date().toISOString(),
   });
@@ -155,6 +159,7 @@ async function runSession(codexArgs) {
     sessionId,
     paneId,
     tmuxSessionName,
+    channelId,
     projectPath: cwd,
   }, { attempts: 4, baseDelayMs: 800 });
 

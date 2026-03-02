@@ -18,6 +18,19 @@ export async function listActiveSessions() {
   return normalizeSessions(raw).sessions;
 }
 
+export async function findActiveSessionByChannelId(channelId) {
+  const normalizedChannelId = String(channelId || '').trim();
+  if (!normalizedChannelId) return null;
+
+  const sessions = await listActiveSessions();
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    if (String(sessions[i]?.channelId || '') === normalizedChannelId) {
+      return sessions[i];
+    }
+  }
+  return null;
+}
+
 export async function upsertActiveSession(session) {
   const raw = await readJson(ACTIVE_SESSIONS_PATH, { sessions: [] });
   const normalized = normalizeSessions(raw);

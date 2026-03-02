@@ -11,6 +11,7 @@ function parseArgs(argv) {
   const parsed = {
     sessionId: '',
     cwd: process.cwd(),
+    channelId: '',
     passthrough: [],
   };
 
@@ -28,6 +29,11 @@ function parseArgs(argv) {
     }
     if (current === '--cwd') {
       parsed.cwd = args[idx + 1] || parsed.cwd;
+      idx += 2;
+      continue;
+    }
+    if (current === '--channel-id') {
+      parsed.channelId = args[idx + 1] || '';
       idx += 2;
       continue;
     }
@@ -80,6 +86,7 @@ async function notifyWithRetry(event, payload, options = {}) {
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
   const sessionId = parsed.sessionId || process.env.CODEX_EVERYWHERE_SESSION_ID || 'unknown-session';
+  const channelId = parsed.channelId || process.env.CODEX_EVERYWHERE_DISCORD_CHANNEL || '';
   const codexBinary = process.env.CODEX_EVERYWHERE_CODEX_BIN || 'codex';
 
   const hookPath = fileURLToPath(new URL('./notify-hook.js', import.meta.url));
@@ -100,6 +107,7 @@ async function main() {
       ...process.env,
       CODEX_EVERYWHERE_SESSION_ID: sessionId,
       CODEX_EVERYWHERE_PROJECT_PATH: parsed.cwd,
+      CODEX_EVERYWHERE_DISCORD_CHANNEL: channelId,
     },
   });
 
@@ -112,6 +120,7 @@ async function main() {
       paneId: process.env.TMUX_PANE || '',
       tmuxSessionName: process.env.CODEX_EVERYWHERE_TMUX_SESSION || '',
       projectPath: parsed.cwd,
+      channelId,
       reason,
     }, { attempts: 3, baseDelayMs: 600 });
 

@@ -2,7 +2,7 @@
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { spawn, spawnSync } from 'child_process';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import {
   DAEMON_LOCK_PATH,
@@ -11,17 +11,32 @@ import {
   GLOBAL_STATE_DIR,
 } from './constants.js';
 import { loadAppConfig } from './config.js';
-import { addReaction, fetchChannelMessages, sendDiscordMessage } from './discord.js';
-import { pruneActiveSessions } from './active-sessions.js';
+import {
+  addReaction,
+  fetchChannelMessages,
+  getDiscordChannel,
+  listGuildTextChannels,
+  sendDiscordMessage,
+} from './discord.js';
+import { pruneActiveSessions, upsertActiveSession } from './active-sessions.js';
 import { lookupMessageMapping, pruneOldMappings } from './registry.js';
-import { capturePane, isTmuxAvailable, listPaneIds, sendLiteralToPane } from './tmux.js';
+import {
+  capturePane,
+  createDetachedSession,
+  isTmuxAvailable,
+  listPaneIds,
+  sanitizeName,
+  sendLiteralToPane,
+} from './tmux.js';
 import { notifyEvent } from './notify.js';
 import {
   clampInt,
   ensureDir,
   normalizeMultiline,
   nowIso,
+  shellEscape,
   sleep,
+  summarizeProject,
   truncate,
   writeJsonAtomic,
   readJson,
@@ -33,8 +48,13 @@ const DEFAULT_STATE = {
   startedAt: null,
   lastPollAt: null,
   discordLastMessageId: null,
+  discordLastMessageByChannel: {},
   messagesInjected: 0,
   processedReplyMessageIds: [],
+  processedReplyMessageIdsByChannel: {},
+  provisionGuildId: '',
+  provisionKnownChannelIds: [],
+  lastProvisionScanAt: null,
   approvalsNotified: 0,
   errors: 0,
   lastError: '',
@@ -43,6 +63,7 @@ const DEFAULT_STATE = {
 
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const REPLY_DAEMON_SCRIPT_PATH = fileURLToPath(import.meta.url);
+const RUN_CODEX_SCRIPT_PATH = fileURLToPath(new URL('./run-codex.js', import.meta.url));
 const OMX_REPLY_LISTENER_PATTERNS = [
   'oh-my-codex/dist/notifications/reply-listener.js',
   'dist/notifications/reply-listener.js',
@@ -417,6 +438,113 @@ function hasBotCheckReaction(message) {
   });
 }
 
+function getChannelCursorMap(state) {
+  if (!state.discordLastMessageByChannel || typeof state.discordLastMessageByChannel !== 'object') {
+    state.discordLastMessageByChannel = {};
+  }
+  return state.discordLastMessageByChannel;
+}
+
+function getProcessedByChannelMap(state) {
+  if (!state.processedReplyMessageIdsByChannel || typeof state.processedReplyMessageIdsByChannel !== 'object') {
+    state.processedReplyMessageIdsByChannel = {};
+  }
+  return state.processedReplyMessageIdsByChannel;
+}
+
+function getProcessedSetForChannel(state, channelId) {
+  const map = getProcessedByChannelMap(state);
+  const current = map[channelId];
+  if (!Array.isArray(current)) {
+    map[channelId] = [];
+    return new Set();
+  }
+  return new Set(current);
+}
+
+function setProcessedSetForChannel(state, channelId, processed) {
+  const map = getProcessedByChannelMap(state);
+  map[channelId] = Array.from(processed).slice(-200);
+}
+
+function buildRunnerCommand(sessionId, cwd, channelId) {
+  const tokens = [
+    'node',
+    RUN_CODEX_SCRIPT_PATH,
+    '--session-id',
+    sessionId,
+    '--cwd',
+    cwd,
+    '--channel-id',
+    channelId,
+    '--',
+  ];
+  return tokens.map((token) => shellEscape(token)).join(' ');
+}
+
+function matchesProvisionFilters(channel, config) {
+  if (!channel || typeof channel !== 'object') return false;
+  const id = String(channel.id || '');
+  if (!id) return false;
+
+  if (id === config.discordBot.channelId) return false;
+
+  const name = String(channel.name || '').toLowerCase();
+  const prefix = String(config.discordProvisioning.channelPrefix || '').trim().toLowerCase();
+  if (prefix && !name.startsWith(prefix)) return false;
+
+  const categoryId = String(config.discordProvisioning.categoryId || '').trim();
+  if (categoryId) {
+    const parentId = String(channel.parent_id || '');
+    if (parentId !== categoryId) return false;
+  }
+
+  return true;
+}
+
+function activeSessionByChannelId(sessions, channelId) {
+  const target = String(channelId || '');
+  if (!target) return null;
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    if (String(sessions[i]?.channelId || '') === target) {
+      return sessions[i];
+    }
+  }
+  return null;
+}
+
+async function launchProvisionedSession(channel, config) {
+  const channelId = String(channel.id || '');
+  const cwd = process.cwd();
+  const sessionId = randomUUID();
+  const project = sanitizeName(summarizeProject(cwd), 'project');
+  const channelName = sanitizeName(String(channel.name || ''), 'channel');
+  const sessionName = `ce-${project}-${channelName}-${Date.now().toString(36).slice(-4)}`;
+  const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId);
+
+  const created = createDetachedSession(sessionName, cwd, runnerCommand);
+
+  const sessionRecord = await upsertActiveSession({
+    sessionId,
+    paneId: created.paneId,
+    tmuxSessionName: created.sessionName,
+    channelId,
+    projectPath: cwd,
+    startedAt: nowIso(),
+    provisionedByChannel: true,
+  });
+
+  await notifyEvent('session-start', {
+    sessionId,
+    paneId: created.paneId,
+    tmuxSessionName: created.sessionName,
+    channelId,
+    projectPath: cwd,
+  }).catch(() => {});
+
+  return sessionRecord;
+}
+
 async function injectReplyToPane(mapping, text, config) {
   const prefix = config.reply.includePrefix ? '[reply:discord] ' : '';
   const sanitized = sanitizeReplyInput(`${prefix}${text}`);
@@ -440,13 +568,12 @@ async function injectDenyFollowup(mapping, config) {
   return injectReplyToPane(mapping, message, config);
 }
 
-async function pollDiscordReplies(config, state, limiter) {
-  if (!Array.isArray(state.processedReplyMessageIds)) {
-    state.processedReplyMessageIds = [];
-  }
-  const processed = new Set(state.processedReplyMessageIds);
+async function pollDiscordRepliesInChannel(config, state, limiter, channelId, activeSessions) {
+  const channelCursorMap = getChannelCursorMap(state);
+  const lastCursor = channelCursorMap[channelId] || null;
+  const processed = getProcessedSetForChannel(state, channelId);
 
-  const fetchResult = await fetchChannelMessages(config.discordBot, state.discordLastMessageId, 20);
+  const fetchResult = await fetchChannelMessages(config.discordBot, channelId, lastCursor, 20);
   if (!fetchResult.success) {
     state.errors += 1;
     state.lastError = fetchResult.error || 'discord_fetch_failed';
@@ -456,17 +583,14 @@ async function pollDiscordReplies(config, state, limiter) {
   const messages = [...fetchResult.messages].reverse();
 
   for (const message of messages) {
+    channelCursorMap[channelId] = message.id;
     state.discordLastMessageId = message.id;
-    if (processed.has(message.id)) {
-      continue;
-    }
+
+    if (processed.has(message.id)) continue;
     if (hasBotCheckReaction(message)) {
       processed.add(message.id);
       continue;
     }
-
-    const referenceId = message?.message_reference?.message_id;
-    if (!referenceId) continue;
 
     const authorId = String(message?.author?.id || '');
     const isBotMessage = message?.author?.bot === true;
@@ -476,8 +600,27 @@ async function pollDiscordReplies(config, state, limiter) {
       continue;
     }
 
-    const mapping = await lookupMessageMapping(referenceId);
-    if (!mapping) continue;
+    const referenceId = message?.message_reference?.message_id || '';
+    const mappedByReference = referenceId ? await lookupMessageMapping(referenceId) : null;
+
+    let mapping = null;
+    if (mappedByReference && (!mappedByReference.channelId || mappedByReference.channelId === channelId)) {
+      mapping = mappedByReference;
+    }
+
+    if (!mapping) {
+      const session = activeSessionByChannelId(activeSessions, channelId);
+      if (!session?.paneId) {
+        continue;
+      }
+      mapping = {
+        kind: 'chat',
+        sessionId: session.sessionId,
+        tmuxPaneId: session.paneId,
+        tmuxSessionName: session.tmuxSessionName || '',
+        channelId,
+      };
+    }
 
     if (!limiter.canProceed()) {
       state.errors += 1;
@@ -491,6 +634,7 @@ async function pollDiscordReplies(config, state, limiter) {
       injectResult = await injectApprovalDecision(mapping, message.content || '');
       if (!injectResult.ok && injectResult.reason === 'invalid_decision') {
         await sendDiscordMessage(config.discordBot, {
+          channelId,
           content: 'Approval reply must start with `y`, `p`, or `n`.',
           replyToMessageId: message.id,
         }).catch(() => {});
@@ -515,12 +659,13 @@ async function pollDiscordReplies(config, state, limiter) {
     if (injectResult.ok) {
       state.messagesInjected += 1;
       processed.add(message.id);
-      await addReaction(config.discordBot, message.id).catch(() => {});
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
       const target = mapping.tmuxSessionName
         ? `${mapping.tmuxSessionName} ${mapping.tmuxPaneId}`
         : mapping.tmuxPaneId;
       const action = mapping.kind === 'approval' ? 'Decision injected' : 'Message injected';
       await sendDiscordMessage(config.discordBot, {
+        channelId,
         content: `${action} into tmux target \`${target}\`.`,
         replyToMessageId: message.id,
       }).catch(() => {});
@@ -530,13 +675,15 @@ async function pollDiscordReplies(config, state, limiter) {
     }
   }
 
-  state.processedReplyMessageIds = Array.from(processed).slice(-200);
+  setProcessedSetForChannel(state, channelId, processed);
+  state.processedReplyMessageIds = state.processedReplyMessageIdsByChannel[channelId] || [];
 }
 
-async function seedDiscordCursorIfNeeded(config, state) {
-  if (state.discordLastMessageId) return false;
+async function seedDiscordCursorIfNeeded(config, state, channelId) {
+  const channelCursorMap = getChannelCursorMap(state);
+  if (channelCursorMap[channelId]) return false;
 
-  const seeded = await fetchChannelMessages(config.discordBot, null, 1);
+  const seeded = await fetchChannelMessages(config.discordBot, channelId, null, 1);
   if (!seeded.success) {
     state.errors += 1;
     state.lastError = seeded.error || 'discord_seed_failed';
@@ -545,13 +692,94 @@ async function seedDiscordCursorIfNeeded(config, state) {
 
   const latest = Array.isArray(seeded.messages) ? seeded.messages[0] : null;
   if (latest?.id) {
+    channelCursorMap[channelId] = latest.id;
     state.discordLastMessageId = latest.id;
   }
 
   return true;
 }
 
-async function scanApprovalPrompts(state) {
+async function ensureProvisionGuildId(config, state) {
+  if (state.provisionGuildId) return state.provisionGuildId;
+
+  const controlChannelResult = await getDiscordChannel(config.discordBot, config.discordBot.channelId);
+  if (!controlChannelResult.success) {
+    state.errors += 1;
+    state.lastError = controlChannelResult.error || 'discord_control_channel_lookup_failed';
+    return '';
+  }
+
+  const guildId = String(controlChannelResult?.channel?.guild_id || '');
+  if (!guildId) {
+    state.errors += 1;
+    state.lastError = 'discord_control_channel_missing_guild';
+    return '';
+  }
+
+  state.provisionGuildId = guildId;
+  return guildId;
+}
+
+async function provisionSessionsForNewChannels(config, state, activeSessions) {
+  if (!config.discordProvisioning.enabled) return activeSessions;
+
+  const guildId = await ensureProvisionGuildId(config, state);
+  if (!guildId) return activeSessions;
+
+  const channelsResult = await listGuildTextChannels(config.discordBot, guildId);
+  if (!channelsResult.success) {
+    state.errors += 1;
+    state.lastError = channelsResult.error || 'discord_list_channels_failed';
+    return activeSessions;
+  }
+
+  const eligibleChannels = channelsResult.channels.filter((channel) => matchesProvisionFilters(channel, config));
+  const knownList = Array.isArray(state.provisionKnownChannelIds) ? state.provisionKnownChannelIds : [];
+  const knownSet = new Set(knownList.filter((id) => typeof id === 'string'));
+
+  if (!state.lastProvisionScanAt) {
+    state.provisionKnownChannelIds = eligibleChannels.map((channel) => String(channel.id));
+    state.lastProvisionScanAt = nowIso();
+    return activeSessions;
+  }
+
+  const nextSessions = [...activeSessions];
+  const managedCount = nextSessions.filter((session) => {
+    const channelId = String(session?.channelId || '');
+    return channelId && channelId !== config.discordBot.channelId;
+  }).length;
+  let count = managedCount;
+
+  for (const channel of eligibleChannels) {
+    const channelId = String(channel.id || '');
+    if (!channelId) continue;
+
+    if (!knownSet.has(channelId)) {
+      knownSet.add(channelId);
+
+      if (activeSessionByChannelId(nextSessions, channelId)) {
+        continue;
+      }
+
+      if (count >= config.discordProvisioning.maxManagedChannels) {
+        continue;
+      }
+
+      const created = await launchProvisionedSession(channel, config).catch(() => null);
+      if (created) {
+        nextSessions.push(created);
+        count += 1;
+      }
+    }
+  }
+
+  state.provisionKnownChannelIds = Array.from(knownSet).slice(-2000);
+  state.lastProvisionScanAt = nowIso();
+
+  return nextSessions;
+}
+
+async function scanApprovalPrompts(config, state) {
   const paneIds = listPaneIds();
   const sessions = await pruneActiveSessions(paneIds);
   const seenSessions = new Set();
@@ -579,6 +807,7 @@ async function scanApprovalPrompts(state) {
       sessionId: session.sessionId,
       paneId: session.paneId,
       tmuxSessionName: session.tmuxSessionName || '',
+      channelId: session.channelId || config.discordBot.channelId || '',
       projectPath: session.projectPath || session.cwd,
       command: approval.command || approval.snippet,
     });
@@ -634,6 +863,19 @@ async function runDaemonLoop() {
     state.lastPollAt = nowIso();
 
     try {
+      const paneIds = listPaneIds();
+      let activeSessions = await pruneActiveSessions(paneIds);
+
+      if (config.notificationsEnabled && config.discordBot.enabled && config.discordProvisioning.enabled) {
+        const lastScanMs = new Date(state.lastProvisionScanAt || 0).getTime();
+        const shouldScan =
+          !Number.isFinite(lastScanMs) ||
+          Date.now() - lastScanMs >= config.discordProvisioning.pollIntervalMs;
+        if (shouldScan) {
+          activeSessions = await provisionSessionsForNewChannels(config, state, activeSessions);
+        }
+      }
+
       if (
         config.notificationsEnabled &&
         config.discordBot.enabled &&
@@ -644,14 +886,27 @@ async function runDaemonLoop() {
         if (limiter.maxPerMinute !== configuredLimit) {
           limiter = new RateLimiter(configuredLimit);
         }
-        const seeded = await seedDiscordCursorIfNeeded(config, state);
-        if (!seeded) {
-          await pollDiscordReplies(config, state, limiter);
+
+        const managedChannelIds = new Set();
+        for (const session of activeSessions) {
+          const channelId = String(session?.channelId || '').trim();
+          if (channelId) managedChannelIds.add(channelId);
+        }
+
+        if (managedChannelIds.size === 0 && config.discordBot.channelId) {
+          managedChannelIds.add(config.discordBot.channelId);
+        }
+
+        for (const channelId of managedChannelIds) {
+          const seeded = await seedDiscordCursorIfNeeded(config, state, channelId);
+          if (!seeded) {
+            await pollDiscordRepliesInChannel(config, state, limiter, channelId, activeSessions);
+          }
         }
       }
 
       if (config.notificationsEnabled && config.discordBot.enabled) {
-        await scanApprovalPrompts(state);
+        await scanApprovalPrompts(config, state);
       }
 
       if (Date.now() - lastPruneAt > PRUNE_INTERVAL_MS) {

@@ -13,6 +13,9 @@ It also scans for Codex permission prompts (approval UI) and forwards them to Di
 - Sends session start/end + turn response notifications to Discord bot channel
 - Two-way chat by replying to bot messages
 - Approval bridge: detects Codex permission prompts and asks user for `y` / `p` / `n` on Discord
+- Multi-channel mode: each Discord channel can own one Codex session
+  - New channels that match provisioning filters auto-start a detached Codex session
+  - Messages posted in that channel route directly to that session
 - OMX-compatible Discord env/config keys
 
 ## Prerequisites
@@ -67,6 +70,13 @@ export OMX_REPLY_INCLUDE_PREFIX="true"
 export OMX_REPLY_AUTO_CONTINUE_ON_DENY="true"
 # Optional custom instruction injected after deny (`n`)
 export OMX_REPLY_ON_DENY_MESSAGE="User denied this command. Continue without running it and choose a safe alternative."
+
+# Optional channel provisioning controls (new channel => new Codex session)
+export OMX_DISCORD_PROVISION_ENABLED="true"
+export OMX_DISCORD_PROVISION_PREFIX="codex-"
+export OMX_DISCORD_PROVISION_CATEGORY_ID=""
+export OMX_DISCORD_PROVISION_POLL_INTERVAL_MS="3000"
+export OMX_DISCORD_PROVISION_MAX_CHANNELS="40"
 ```
 
 You can also set the same values in `~/.codex/.omx-config.json`:
@@ -79,7 +89,14 @@ You can also set the same values in `~/.codex/.omx-config.json`:
       "enabled": true,
       "botToken": "<token>",
       "channelId": "<channel-id>",
-      "mention": "<@123456789012345678>"
+      "mention": "<@123456789012345678>",
+      "provisioning": {
+        "enabled": true,
+        "channelPrefix": "codex-",
+        "categoryId": "",
+        "pollIntervalMs": 3000,
+        "maxManagedChannels": 40
+      }
     },
     "reply": {
       "enabled": true,
@@ -119,6 +136,15 @@ When Codex asks for command approval, daemon sends a Discord message. Reply to t
 
 The decision is injected into the tmux pane.
 When denying with `n`, codex-everywhere also injects a short follow-up instruction so Codex continues without stalling.
+
+## Channel-per-session Mode
+
+The configured `notifications.discord-bot.channelId` acts as the control channel and guild anchor.
+
+- Existing matching channels are baselined when daemon starts.
+- Creating a new matching text channel (same guild, optional prefix/category filters) auto-starts a new detached Codex session bound to that channel.
+- Any authorized user message in that channel is injected into its bound Codex session.
+- Reply-threading still works; channel routing is used as fallback when message references are absent.
 
 ## Logs and State
 
