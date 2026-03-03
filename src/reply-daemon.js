@@ -13,17 +13,24 @@ import {
 import { loadAppConfig } from './config.js';
 import {
   addReaction,
+  deleteDiscordChannel,
   fetchChannelMessages,
   getDiscordChannel,
   listGuildTextChannels,
   sendDiscordMessage,
 } from './discord.js';
-import { pruneActiveSessions, upsertActiveSession } from './active-sessions.js';
+import {
+  pruneActiveSessions,
+  removeActiveSession,
+  upsertActiveSession,
+} from './active-sessions.js';
 import { lookupMessageMapping, pruneOldMappings } from './registry.js';
 import {
   capturePane,
   createDetachedSession,
   isTmuxAvailable,
+  killPane,
+  killSession,
   listPaneIds,
   sanitizeName,
   sendLiteralToPane,
@@ -383,6 +390,14 @@ class RateLimiter {
   }
 }
 
+const TERMINATE_MESSAGE_COMMANDS = new Set([
+  '!ce-exit',
+  '!ce-terminate',
+  '!codex-exit',
+  '!codex-terminate',
+  '/exit',
+]);
+
 function parseApprovalDecision(text) {
   const lowered = String(text ?? '').trim().toLowerCase();
   if (/^(y|yes|approve|allow|1)\b/.test(lowered)) {
@@ -393,6 +408,15 @@ function parseApprovalDecision(text) {
   }
   if (/^(n|no|deny|reject|3)\b/.test(lowered)) {
     return { key: '3', label: 'deny' };
+  }
+  return null;
+}
+
+function parseLifecycleCommand(text) {
+  const normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (TERMINATE_MESSAGE_COMMANDS.has(normalized)) {
+    return { kind: 'terminate-session' };
   }
   return null;
 }
@@ -568,6 +592,90 @@ async function injectDenyFollowup(mapping, config) {
   return injectReplyToPane(mapping, message, config);
 }
 
+async function waitForPaneExit(paneId, timeoutMs) {
+  const waitMs = Math.max(0, Math.trunc(timeoutMs));
+  const deadline = Date.now() + waitMs;
+
+  while (Date.now() < deadline) {
+    if (!listPaneIds().has(paneId)) {
+      return true;
+    }
+    await sleep(250);
+  }
+
+  return !listPaneIds().has(paneId);
+}
+
+function shouldDeleteManagedSessionChannel(session, config) {
+  const channelId = String(session?.channelId || '').trim();
+  if (!channelId || !/^\d{17,20}$/.test(channelId)) return false;
+  if (channelId === String(config?.discordBot?.channelId || '').trim()) return false;
+  return session?.provisionedByChannel === true;
+}
+
+async function terminateSessionFromDiscordCommand(session, config, sourceMessageId = '') {
+  const paneId = String(session?.paneId || '');
+  const channelId = String(session?.channelId || '').trim();
+  if (!paneId) {
+    return { ok: false, error: 'missing_pane_id' };
+  }
+
+  const submitted = sendLiteralToPane(paneId, '/exit', true, 1);
+  let forced = false;
+
+  if (!submitted || !(await waitForPaneExit(paneId, 10000))) {
+    const killBySession = session.tmuxSessionName ? killSession(session.tmuxSessionName) : false;
+    const killByPane = killBySession ? true : killPane(paneId);
+    if (!killByPane) {
+      return { ok: false, error: 'tmux_terminate_failed' };
+    }
+
+    forced = true;
+    await waitForPaneExit(paneId, 2500);
+    await removeActiveSession(session.sessionId).catch(() => {});
+    await notifyEvent('session-end', {
+      sessionId: session.sessionId,
+      paneId: session.paneId,
+      tmuxSessionName: session.tmuxSessionName || '',
+      channelId,
+      projectPath: session.projectPath || process.cwd(),
+      reason: submitted ? 'terminated:force-timeout' : 'terminated:force-no-exit-submit',
+    }).catch(() => {});
+  }
+
+  if (!shouldDeleteManagedSessionChannel(session, config)) {
+    return { ok: true, forced, channelDeleted: false };
+  }
+
+  await sendDiscordMessage(config.discordBot, {
+    channelId,
+    content: `Session \`${session.sessionId}\` terminated by Discord command. This channel will now be deleted.`,
+    replyToMessageId: sourceMessageId || undefined,
+  }).catch(() => {});
+
+  await sleep(350);
+
+  const deleteResult = await deleteDiscordChannel(
+    config.discordBot,
+    channelId,
+    'codex-everywhere:discord-command:session-terminate',
+  ).catch((error) => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+
+  if (!deleteResult.success) {
+    return {
+      ok: true,
+      forced,
+      channelDeleted: false,
+      channelDeleteError: deleteResult.error || 'discord_delete_channel_failed',
+    };
+  }
+
+  return { ok: true, forced, channelDeleted: true };
+}
+
 async function pollDiscordRepliesInChannel(config, state, limiter, channelId, activeSessions) {
   const channelCursorMap = getChannelCursorMap(state);
   const lastCursor = channelCursorMap[channelId] || null;
@@ -597,6 +705,62 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
     if (isBotMessage) continue;
 
     if (!config.reply.authorizedDiscordUserIds.includes(authorId)) {
+      continue;
+    }
+
+    const lifecycle = parseLifecycleCommand(message.content || '');
+    if (lifecycle?.kind === 'terminate-session') {
+      if (!limiter.canProceed()) {
+        state.errors += 1;
+        state.lastError = 'rate_limited';
+        continue;
+      }
+
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+
+      const session = activeSessionByChannelId(activeSessions, channelId);
+      if (!session?.paneId) {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'No active Codex session is bound to this channel.',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content: `Termination requested for session \`${session.sessionId}\`.`,
+        replyToMessageId: message.id,
+      }).catch(() => {});
+
+      const terminated = await terminateSessionFromDiscordCommand(session, config, message.id);
+      if (!terminated.ok) {
+        state.errors += 1;
+        state.lastError = terminated.error || 'session_terminate_failed';
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: `Failed to terminate session \`${session.sessionId}\`: ${terminated.error || 'unknown error'}.`,
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      state.messagesInjected += 1;
+      activeSessions = activeSessions.filter((candidate) => candidate?.sessionId !== session.sessionId);
+
+      if (!terminated.channelDeleted) {
+        const mode = terminated.forced ? 'force-terminated' : 'terminated';
+        const suffix = terminated.channelDeleteError
+          ? ` Channel delete failed: ${terminated.channelDeleteError}.`
+          : '';
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: `Session \`${session.sessionId}\` ${mode}.${suffix}`,
+          replyToMessageId: message.id,
+        }).catch(() => {});
+      }
       continue;
     }
 

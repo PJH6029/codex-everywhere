@@ -5,6 +5,7 @@ import { basename } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { loadAppConfig } from './config.js';
+import { deleteDiscordChannel, sendDiscordMessage } from './discord.js';
 import { notifyEvent } from './notify.js';
 import { startDaemon, stopDaemon, daemonStatus } from './reply-daemon.js';
 import {
@@ -44,6 +45,7 @@ Behavior:
   - Accepts Discord replies and injects them into the Codex pane
   - Forwards Codex approval prompts through Discord and injects decisions
   - Lists, opens, and terminates tmux sessions created from Discord channels
+  - Deletes per-session Discord channels when those managed sessions are terminated
 `;
 
 function codexInstalled() {
@@ -336,6 +338,47 @@ async function terminateSession(selected, options) {
   return { terminated: true, forced: true };
 }
 
+function shouldDeleteManagedChannel(session, config) {
+  const channelId = String(session?.channelId || '').trim();
+  if (!channelId || !/^\d{17,20}$/.test(channelId)) return false;
+  if (channelId === String(config?.discordBot?.channelId || '').trim()) return false;
+  return session?.provisionedByChannel === true;
+}
+
+async function deleteManagedChannelForTerminatedSession(session, trigger = 'cli') {
+  const config = loadAppConfig();
+  if (!config.notificationsEnabled || !config.discordBot.enabled) {
+    return { deleted: false, reason: 'discord_not_configured' };
+  }
+
+  if (!shouldDeleteManagedChannel(session, config)) {
+    return { deleted: false, reason: 'not_managed_channel' };
+  }
+
+  const channelId = String(session.channelId).trim();
+  await sendDiscordMessage(config.discordBot, {
+    channelId,
+    content: `Session \`${session.sessionId}\` terminated by ${trigger}. This channel will now be deleted.`,
+  }).catch(() => {});
+
+  await sleep(350);
+
+  const result = await deleteDiscordChannel(
+    config.discordBot,
+    channelId,
+    `codex-everywhere:${trigger}:session-terminate`,
+  ).catch((error) => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+
+  if (!result.success) {
+    return { deleted: false, reason: result.error || 'discord_delete_channel_failed' };
+  }
+
+  return { deleted: true, reason: '' };
+}
+
 async function handleSessionsCommand(args) {
   const sub = args[0] || 'list';
 
@@ -389,11 +432,26 @@ async function handleSessionsCommand(args) {
     }
 
     const result = await terminateSession(selected, options);
+    const channelDeleteResult = await deleteManagedChannelForTerminatedSession(selected, 'cli').catch((error) => ({
+      deleted: false,
+      reason: error instanceof Error ? error.message : String(error),
+    }));
+
     if (result.forced) {
       console.log(`[codex-everywhere] force-terminated session ${selected.sessionId}`);
+      if (channelDeleteResult.deleted) {
+        console.log(`[codex-everywhere] deleted channel ${selected.channelId}`);
+      } else if (channelDeleteResult.reason && channelDeleteResult.reason !== 'not_managed_channel') {
+        console.warn(`[codex-everywhere] warning: channel delete failed (${channelDeleteResult.reason})`);
+      }
       return;
     }
     console.log(`[codex-everywhere] graceful termination requested for session ${selected.sessionId}`);
+    if (channelDeleteResult.deleted) {
+      console.log(`[codex-everywhere] deleted channel ${selected.channelId}`);
+    } else if (channelDeleteResult.reason && channelDeleteResult.reason !== 'not_managed_channel') {
+      console.warn(`[codex-everywhere] warning: channel delete failed (${channelDeleteResult.reason})`);
+    }
     return;
   }
 

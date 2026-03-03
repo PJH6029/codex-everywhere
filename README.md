@@ -166,6 +166,8 @@ If graceful exit stalls, force-kill the tmux target after a timeout:
 codex-everywhere sessions terminate 1 --wait 8 --force
 ```
 
+For channel-provisioned sessions, `sessions terminate` also deletes the bound Discord channel after termination.
+
 ## Permission Approval Flow
 
 When Codex asks for command approval, daemon sends a Discord message. Reply to that message with:
@@ -185,6 +187,19 @@ The configured `notifications.discord-bot.channelId` acts as the control channel
 - Creating a new matching text channel (same guild, optional prefix/category filters) auto-starts a new detached Codex session bound to that channel.
 - Any authorized user message in that channel is injected into its bound Codex session.
 - Reply-threading still works; channel routing is used as fallback when message references are absent.
+
+### Discord-side Termination Command
+
+To terminate from Discord directly, send one of these exact messages in the session channel:
+
+- `!ce-exit`
+- `!ce-terminate`
+- `!codex-exit`
+- `!codex-terminate`
+- `/exit` (supported as an alias, but slash-style inputs can conflict with Discord app commands)
+
+The daemon safely terminates the bound Codex session (graceful `/exit` first, force fallback if needed).  
+If the channel is a provisioned per-session channel, the channel is deleted after termination.
 
 ## Logs and State
 

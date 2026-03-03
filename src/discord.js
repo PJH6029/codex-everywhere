@@ -267,3 +267,50 @@ export async function listGuildTextChannels(config, guildId) {
 
   return { success: false, error: lastError, channels: [] };
 }
+
+export async function deleteDiscordChannel(config, channelId, reason = '') {
+  const resolvedChannelId = resolveChannelId(config, { channelId });
+  const tokens = tokenCandidates(config);
+  if (tokens.length === 0 || !resolvedChannelId) {
+    return { success: false, error: 'discord_not_configured' };
+  }
+
+  const url = `https://discord.com/api/v10/channels/${resolvedChannelId}`;
+  const reasonText = String(reason || '').trim();
+
+  let lastError = 'discord_delete_channel_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const headers = {
+      Authorization: `Bot ${tokens[idx]}`,
+    };
+    if (reasonText) {
+      headers['X-Audit-Log-Reason'] = encodeURIComponent(reasonText).slice(0, 512);
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers,
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        lastError = `discord_http_${response.status}`;
+        if (response.status === 401 && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError };
+      }
+
+      return {
+        success: true,
+        usedFallbackToken: idx > 0,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_delete_channel_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError };
+    }
+  }
+
+  return { success: false, error: lastError };
+}
