@@ -30,17 +30,21 @@ Target defaults:
 
 ## Workflow
 
-1. Ensure package is installed and runnable.
+1. Ensure Codex has full access permission.
+   - In Codex terminal, run `/permissions` and allow full access for setup.
+   - Recommend user watches setup live while automation runs.
+2. Ensure package is installed and runnable.
    - In repo: `npm link`
    - Sanity: `codex-everywhere --help`
-2. Open Discord Developer Portal with Playwright MCP:
+3. Open Discord Developer Portal with Playwright MCP:
    - `https://discord.com/developers/applications`
    - Pause for user login / 2FA when needed.
-3. Create app + bot (unless already present):
+4. Create app + bot (unless already present):
    - New Application (name: `codex-everywhere` or user choice)
    - Bot tab: create bot, enable **Message Content Intent**
+   - Bot token generation/reveal may require re-authentication; ask user to complete it
    - Copy bot token
-4. Invite bot to server:
+5. Invite bot to server:
    - OAuth2 URL Generator
    - Scope: `bot`
    - Permissions:
@@ -49,19 +53,20 @@ Target defaults:
      - `Send Messages`
      - `Add Reactions`
      - `Manage Channels`
-   - Open generated URL and complete invite.
-5. Create server/guild (Playwright on Discord Web):
+   - Open generated URL and complete invite
+   - If CAPTCHA appears, user must solve it.
+6. Create server/guild (Playwright on Discord Web):
    - Create server named `codex-everywhere-server`.
    - Keep the default first text channel (`일반` or `general` depending on locale).
-6. Prepare control channel:
+7. Prepare control channel:
    - Ask user to send one normal text message in that default channel (needed for auto user-id discovery).
-7. Apply local config (single command, no channel-id copy needed):
+8. Apply local config (single command, no channel-id copy needed):
    - `codex-everywhere setup discord --bot-token "<TOKEN>" --guild-name "codex-everywhere-server" --authorized-user-id auto`
    - Optional locale explicit: `--control-channel-name "일반"` or `--control-channel-name "general"`
-8. Start daemon:
+9. Start daemon:
    - `codex-everywhere daemon stop`
    - `codex-everywhere daemon start`
-9. Verify:
+10. Verify:
    - In control channel: `!ce-new`
    - Confirm new channel/session appears.
 

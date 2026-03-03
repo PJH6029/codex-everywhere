@@ -62,6 +62,20 @@ Recommended flow:
 
 Note: guild/server creation itself is performed through Discord Web UI automation (Playwright-assisted), not via bot REST API.
 
+### User Actions During Automated Setup
+
+During `/setup-discord`, the user still has a few required actions:
+
+1. Grant Codex full access permission before setup:
+   - In Codex terminal, run `/permissions` and allow full access for setup.
+   - Recommended: keep the setup visible and watch live while the agent runs browser steps.
+2. Complete CAPTCHA/anti-bot checks when Discord prompts:
+   - The agent cannot bypass CAPTCHA; user must complete it manually.
+3. Re-authenticate when generating/revealing bot token:
+   - Discord may request an additional login/verification for bot token operations.
+4. Send one normal message in the control channel:
+   - Required for automatic authorized-user discovery (`--authorized-user-id auto`).
+
 ## Discord Configuration
 
 ### Discord Developer Portal + Server Setup (Required)
