@@ -5,7 +5,13 @@ import { basename } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { loadAppConfig } from './config.js';
-import { deleteDiscordChannel, sendDiscordMessage } from './discord.js';
+import {
+  createGuildTextChannel,
+  deleteDiscordChannel,
+  getDiscordChannel,
+  listGuildTextChannels,
+  sendDiscordMessage,
+} from './discord.js';
 import { notifyEvent } from './notify.js';
 import { startDaemon, stopDaemon, daemonStatus } from './reply-daemon.js';
 import { runDiscordSetupCommand } from './setup-discord.js';
@@ -84,6 +90,8 @@ function projectNameFromCwd(cwd) {
   return sanitizeName(basename(cwd), 'project');
 }
 
+const DEFAULT_NEW_CHANNEL_NAME = 'new-channel';
+
 function ensureDiscordConfigured(config) {
   if (!config.notificationsEnabled || !config.discordBot.enabled) {
     throw new Error(
@@ -92,14 +100,109 @@ function ensureDiscordConfigured(config) {
   }
 }
 
-function isProvisionedDiscordSession(session) {
-  return session?.provisionedByChannel === true;
+function normalizeDiscordChannelName(name, fallback = DEFAULT_NEW_CHANNEL_NAME) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 95) || fallback;
+}
+
+function randomSuffix(length = 4) {
+  const raw = Math.floor(Math.random() * 36 ** Math.max(1, length))
+    .toString(36);
+  return raw.padStart(Math.max(1, length), '0').slice(0, Math.max(1, length));
+}
+
+function inferCliProvisionChannelName(config) {
+  const prefix = String(config?.discordProvisioning?.channelPrefix || 'codex-').trim().toLowerCase() || 'codex-';
+  const base = normalizeDiscordChannelName(DEFAULT_NEW_CHANNEL_NAME);
+  if (base.startsWith(prefix)) {
+    return base.slice(0, 95);
+  }
+  return `${prefix}${base}`.slice(0, 95);
+}
+
+async function resolveControlGuildId(config) {
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  if (!controlChannelId) return '';
+
+  const lookedUp = await getDiscordChannel(config.discordBot, controlChannelId).catch(() => ({
+    success: false,
+    error: 'discord_control_channel_lookup_failed',
+  }));
+  if (!lookedUp.success) return '';
+  return String(lookedUp?.channel?.guild_id || '').trim();
+}
+
+async function makeUniqueDiscordChannelName(config, guildId, desiredName) {
+  const candidate = normalizeDiscordChannelName(desiredName);
+  const listed = await listGuildTextChannels(config.discordBot, guildId).catch(() => ({
+    success: false,
+    channels: [],
+  }));
+  if (!listed.success) return candidate;
+
+  const existing = new Set(
+    listed.channels.map((channel) => normalizeDiscordChannelName(channel?.name || '')),
+  );
+  if (!existing.has(candidate)) return candidate;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const suffix = randomSuffix(4 + Math.min(2, attempt));
+    const maxBaseLength = Math.max(1, 95 - suffix.length - 1);
+    const base = candidate.slice(0, maxBaseLength);
+    const next = `${base}-${suffix}`;
+    if (!existing.has(next)) return next;
+  }
+
+  return `${candidate.slice(0, 90)}-${Date.now().toString(36).slice(-4)}`;
+}
+
+async function provisionSessionChannelForCli(config, cwd) {
+  if (config?.discordProvisioning?.enabled !== true) {
+    return { success: false, reason: 'provisioning_disabled' };
+  }
+
+  const guildId = await resolveControlGuildId(config);
+  if (!guildId) {
+    return { success: false, reason: 'discord_control_channel_lookup_failed' };
+  }
+
+  const desiredName = inferCliProvisionChannelName(config);
+  const channelName = await makeUniqueDiscordChannelName(config, guildId, desiredName);
+  const parentId = String(config?.discordProvisioning?.categoryId || '').trim();
+  const createResult = await createGuildTextChannel(config.discordBot, guildId, {
+    name: channelName,
+    parentId,
+    topic: `codex-everywhere cwd: ${cwd}`,
+  }).catch((error) => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+
+  if (!createResult.success) {
+    return { success: false, reason: createResult.error || 'discord_create_channel_failed' };
+  }
+
+  const channelId = String(createResult?.channel?.id || '').trim();
+  if (!channelId) {
+    return { success: false, reason: 'discord_create_channel_missing_id' };
+  }
+
+  return {
+    success: true,
+    channelId,
+    channelName,
+    guildId,
+  };
 }
 
 async function loadManagedSessions(includeAll = false) {
+  void includeAll;
   const sessions = await pruneActiveSessions(listPaneIds());
-  const filtered = includeAll ? sessions : sessions.filter(isProvisionedDiscordSession);
-  return filtered.sort((a, b) => {
+  return sessions.sort((a, b) => {
     const ta = new Date(a?.startedAt || 0).getTime();
     const tb = new Date(b?.startedAt || 0).getTime();
     return tb - ta;
@@ -162,12 +265,9 @@ function parseSessionCommandOptions(args) {
 }
 
 function printSessionList(sessions, includeAll) {
+  void includeAll;
   if (sessions.length === 0) {
-    if (includeAll) {
-      console.log('[codex-everywhere] no active tmux-backed codex sessions found');
-    } else {
-      console.log('[codex-everywhere] no Discord-provisioned sessions found (use `--all` to include control-channel sessions)');
-    }
+    console.log('[codex-everywhere] no active tmux-backed codex sessions found');
     return;
   }
 
@@ -539,25 +639,54 @@ async function runSession(codexArgs) {
 
   const cwd = process.cwd();
   const sessionId = randomUUID();
-  const channelId = config.discordBot.channelId;
+  let channelId = String(config.discordBot.channelId || '').trim();
+  let provisionedByChannel = false;
+  let channelName = '';
+  let provisionedGuildId = '';
+  let autoChannelNamePending = false;
+
+  const provisionResult = await provisionSessionChannelForCli(config, cwd);
+  if (provisionResult.success) {
+    channelId = provisionResult.channelId;
+    channelName = provisionResult.channelName;
+    provisionedGuildId = provisionResult.guildId;
+    provisionedByChannel = true;
+    autoChannelNamePending = true;
+  } else if (provisionResult.reason !== 'provisioning_disabled') {
+    console.warn(
+      `[codex-everywhere] warning: session channel provisioning failed (${provisionResult.reason}); using control channel`,
+    );
+  }
+
   const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId, codexArgs);
 
   let tmuxSessionName = '';
   let paneId = '';
 
-  if (process.env.TMUX) {
-    const windowName = `ce-${projectNameFromCwd(cwd)}`;
-    const created = createWindowInCurrentSession(windowName, cwd, runnerCommand);
-    tmuxSessionName = created.sessionName;
-    paneId = created.paneId;
-    if (process.stdin.isTTY && process.stdout.isTTY) {
-      selectWindow(created.windowId);
+  try {
+    if (process.env.TMUX) {
+      const windowName = `ce-${projectNameFromCwd(cwd)}`;
+      const created = createWindowInCurrentSession(windowName, cwd, runnerCommand);
+      tmuxSessionName = created.sessionName;
+      paneId = created.paneId;
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        selectWindow(created.windowId);
+      }
+    } else {
+      const sessionName = `ce-${projectNameFromCwd(cwd)}-${Date.now().toString(36).slice(-4)}`;
+      const created = createDetachedSession(sessionName, cwd, runnerCommand);
+      tmuxSessionName = created.sessionName;
+      paneId = created.paneId;
     }
-  } else {
-    const sessionName = `ce-${projectNameFromCwd(cwd)}-${Date.now().toString(36).slice(-4)}`;
-    const created = createDetachedSession(sessionName, cwd, runnerCommand);
-    tmuxSessionName = created.sessionName;
-    paneId = created.paneId;
+  } catch (error) {
+    if (provisionedByChannel && channelId) {
+      await deleteDiscordChannel(
+        config.discordBot,
+        channelId,
+        'codex-everywhere:cleanup:tmux-start-failed',
+      ).catch(() => {});
+    }
+    throw error;
   }
 
   await upsertActiveSession({
@@ -565,6 +694,10 @@ async function runSession(codexArgs) {
     paneId,
     tmuxSessionName,
     channelId,
+    channelName,
+    channelRoutingKey: `discord:${channelId}`,
+    autoChannelNamePending,
+    provisionedByChannel,
     projectPath: cwd,
     startedAt: new Date().toISOString(),
   });
@@ -581,6 +714,26 @@ async function runSession(codexArgs) {
     console.warn(
       `[codex-everywhere] warning: session-start notification failed after retries (${startNotifyResult.error || 'unknown_error'})`,
     );
+  }
+
+  const controlChannelId = String(config.discordBot.channelId || '').trim();
+  if (
+    provisionedByChannel &&
+    provisionedGuildId &&
+    controlChannelId &&
+    controlChannelId !== channelId
+  ) {
+    const channelLink = `https://discord.com/channels/${provisionedGuildId}/${channelId}`;
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: [
+        config.debug === true
+          ? `Started session \`${sessionId}\` in <#${channelId}>.`
+          : `Started a new session in <#${channelId}>.`,
+        `Directory: \`${cwd}\``,
+        `Open channel: ${channelLink}`,
+      ].join('\n'),
+    }).catch(() => {});
   }
 
   if (process.env.TMUX) {
