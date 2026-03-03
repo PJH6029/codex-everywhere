@@ -116,6 +116,14 @@ export function attachSession(sessionName) {
   }
 }
 
+export function switchClientSession(sessionName) {
+  const result = runTmux(['switch-client', '-t', sessionName], {
+    timeout: 3000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return result.ok;
+}
+
 export function capturePane(paneId, lines = 80) {
   if (!paneId || !/^%\d+$/.test(String(paneId))) return '';
 

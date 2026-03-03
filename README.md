@@ -126,6 +126,34 @@ If `daemon start` reports a conflicting listener, stop old OMX reply listeners f
 pkill -f 'oh-my-codex/dist/notifications/reply-listener.js'
 ```
 
+## Session Access (From Desktop)
+
+List Discord-provisioned sessions:
+
+```bash
+codex-everywhere sessions list
+```
+
+Include all active sessions (including control-channel sessions):
+
+```bash
+codex-everywhere sessions list --all
+```
+
+Attach to a session by selector (index, channel ID, session ID, pane ID, or tmux session name):
+
+```bash
+codex-everywhere sessions attach 1
+codex-everywhere sessions attach 1478000836398551083
+```
+
+Open live pane mode instead of tmux attach:
+
+```bash
+codex-everywhere sessions attach 1 --pane
+codex-everywhere sessions attach 1 --pane --lines 160
+```
+
 ## Permission Approval Flow
 
 When Codex asks for command approval, daemon sends a Discord message. Reply to that message with:

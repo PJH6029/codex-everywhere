@@ -7,14 +7,17 @@ import { spawnSync } from 'child_process';
 import { loadAppConfig } from './config.js';
 import { notifyEvent } from './notify.js';
 import { startDaemon, stopDaemon, daemonStatus } from './reply-daemon.js';
-import { upsertActiveSession } from './active-sessions.js';
+import { pruneActiveSessions, upsertActiveSession } from './active-sessions.js';
 import {
   attachSession,
+  capturePane,
   createDetachedSession,
   createWindowInCurrentSession,
   isTmuxAvailable,
+  listPaneIds,
   selectWindow,
   sanitizeName,
+  switchClientSession,
 } from './tmux.js';
 import { appendJsonl, resolveFromCwd, shellEscape, sleep, todayFileName } from './utils.js';
 
@@ -23,12 +26,15 @@ const HELP = `codex-everywhere
 Usage:
   codex-everywhere [codex args...]
   codex-everywhere daemon <start|stop|status>
+  codex-everywhere sessions [list] [--all]
+  codex-everywhere sessions attach [selector] [--pane] [--lines <n>] [--all]
 
 Behavior:
   - Starts Codex in tmux
   - Sends Discord bot notifications (OMX-compatible config/env)
   - Accepts Discord replies and injects them into the Codex pane
   - Forwards Codex approval prompts through Discord and injects decisions
+  - Lists and opens tmux sessions that were created from Discord channels
 `;
 
 function codexInstalled() {
@@ -69,6 +75,183 @@ function ensureDiscordConfigured(config) {
       'Discord bot notification config missing. Set OMX_DISCORD_NOTIFIER_BOT_TOKEN and OMX_DISCORD_NOTIFIER_CHANNEL, or configure ~/.codex/.omx-config.json notifications["discord-bot"].',
     );
   }
+}
+
+function isProvisionedDiscordSession(session) {
+  return session?.provisionedByChannel === true;
+}
+
+async function loadManagedSessions(includeAll = false) {
+  const sessions = await pruneActiveSessions(listPaneIds());
+  const filtered = includeAll ? sessions : sessions.filter(isProvisionedDiscordSession);
+  return filtered.sort((a, b) => {
+    const ta = new Date(a?.startedAt || 0).getTime();
+    const tb = new Date(b?.startedAt || 0).getTime();
+    return tb - ta;
+  });
+}
+
+function parseSessionCommandOptions(args) {
+  const parsed = {
+    selector: '',
+    includeAll: false,
+    paneMode: false,
+    lines: 120,
+  };
+
+  for (let idx = 0; idx < args.length; idx += 1) {
+    const token = args[idx];
+    if (token === '--all') {
+      parsed.includeAll = true;
+      continue;
+    }
+    if (token === '--pane') {
+      parsed.paneMode = true;
+      continue;
+    }
+    if (token === '--lines') {
+      const value = Number.parseInt(String(args[idx + 1] || ''), 10);
+      if (!Number.isFinite(value) || value <= 0) {
+        throw new Error('`--lines` must be a positive integer');
+      }
+      parsed.lines = value;
+      idx += 1;
+      continue;
+    }
+    if (token.startsWith('--')) {
+      throw new Error(`unknown option: ${token}`);
+    }
+    if (!parsed.selector) {
+      parsed.selector = token;
+      continue;
+    }
+    throw new Error(`unexpected argument: ${token}`);
+  }
+
+  return parsed;
+}
+
+function printSessionList(sessions, includeAll) {
+  if (sessions.length === 0) {
+    if (includeAll) {
+      console.log('[codex-everywhere] no active tmux-backed codex sessions found');
+    } else {
+      console.log('[codex-everywhere] no Discord-provisioned sessions found (use `--all` to include control-channel sessions)');
+    }
+    return;
+  }
+
+  console.log('IDX  CHANNEL_ID            SESSION_NAME                      PANE  SESSION_ID');
+  for (let idx = 0; idx < sessions.length; idx += 1) {
+    const session = sessions[idx];
+    const channel = String(session.channelId || '-').padEnd(20, ' ');
+    const name = String(session.tmuxSessionName || '-').slice(0, 32).padEnd(32, ' ');
+    const pane = String(session.paneId || '-').padEnd(5, ' ');
+    const id = String(session.sessionId || '-');
+    console.log(`${String(idx + 1).padStart(3, ' ')}  ${channel} ${name} ${pane} ${id}`);
+  }
+}
+
+function resolveSessionSelector(sessions, selector) {
+  if (!selector) {
+    if (sessions.length === 1) return sessions[0];
+    return null;
+  }
+
+  const index = Number.parseInt(selector, 10);
+  if (Number.isFinite(index) && String(index) === selector.trim()) {
+    if (index >= 1 && index <= sessions.length) {
+      return sessions[index - 1];
+    }
+  }
+
+  const matches = sessions.filter((session) => {
+    return [
+      String(session.sessionId || ''),
+      String(session.channelId || ''),
+      String(session.tmuxSessionName || ''),
+      String(session.paneId || ''),
+    ].includes(selector);
+  });
+
+  if (matches.length === 1) return matches[0];
+  return null;
+}
+
+async function runPaneMode(session, lines) {
+  const paneId = String(session?.paneId || '');
+  if (!paneId) {
+    throw new Error('selected session does not have a valid pane id');
+  }
+
+  let stopRequested = false;
+  const stop = () => {
+    stopRequested = true;
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+
+  while (!stopRequested) {
+    const content = capturePane(paneId, lines);
+    if (!content) {
+      console.error(`[codex-everywhere] pane ${paneId} no longer available`);
+      break;
+    }
+    process.stdout.write('\x1Bc');
+    process.stdout.write(content);
+    process.stdout.write('\n');
+    await sleep(1000);
+  }
+}
+
+function attachOrSwitchSession(sessionName) {
+  if (process.env.TMUX) {
+    const ok = switchClientSession(sessionName);
+    if (!ok) {
+      throw new Error(`tmux switch-client failed for ${sessionName}`);
+    }
+    return;
+  }
+  attachSession(sessionName);
+}
+
+async function handleSessionsCommand(args) {
+  const sub = args[0] || 'list';
+
+  if (sub === 'list') {
+    const options = parseSessionCommandOptions(args.slice(1));
+    const sessions = await loadManagedSessions(options.includeAll);
+    printSessionList(sessions, options.includeAll);
+    return;
+  }
+
+  if (sub === 'attach') {
+    const options = parseSessionCommandOptions(args.slice(1));
+    const sessions = await loadManagedSessions(options.includeAll);
+    const selected = resolveSessionSelector(sessions, options.selector);
+
+    if (!selected) {
+      printSessionList(sessions, options.includeAll);
+      if (!options.selector && sessions.length > 1) {
+        throw new Error('multiple sessions found; provide a selector (index, channel id, session id, pane id, or tmux session name)');
+      }
+      throw new Error(`session not found for selector: ${options.selector || '(empty)'}`);
+    }
+
+    if (options.paneMode) {
+      await runPaneMode(selected, options.lines);
+      return;
+    }
+
+    if (!selected.tmuxSessionName) {
+      throw new Error('selected session does not have a tmux session name; use `--pane` mode');
+    }
+
+    attachOrSwitchSession(selected.tmuxSessionName);
+    return;
+  }
+
+  throw new Error('unknown sessions command. Use `sessions list` or `sessions attach`');
 }
 
 async function notifyWithRetry(event, payload, options = {}) {
@@ -219,6 +402,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (first === 'daemon') {
     await handleDaemonCommand(argv[1] || 'status');
+    return;
+  }
+
+  if (first === 'sessions' || first === 'session') {
+    await handleSessionsCommand(argv.slice(1));
     return;
   }
 
