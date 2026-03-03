@@ -3,7 +3,7 @@ name: setup-discord
 description: Bootstrap Discord app/bot/server setup for codex-everywhere and apply local config with minimal manual steps.
 triggers:
   - "setup discord"
-  - "/setup-discord"
+  - "$setup-discord"
   - "configure codex-everywhere discord"
 ---
 

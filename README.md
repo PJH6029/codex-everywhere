@@ -56,7 +56,7 @@ Recommended flow:
 
 1. `npm link`
 2. `codex-everywhere`
-3. Run `/setup-discord` in Codex (or tell Codex to use local `setup-discord` skill)
+3. Run `$setup-discord` in Codex (or tell Codex to use local `setup-discord` skill)
 4. Skill creates/uses server `codex-everywhere-server` and default control channel (`일반`/`general`)
 5. In Discord control channel, type `!ce-new`
 
@@ -64,7 +64,7 @@ Note: guild/server creation itself is performed through Discord Web UI automatio
 
 ### User Actions During Automated Setup
 
-During `/setup-discord`, the user still has a few required actions:
+During `$setup-discord`, the user still has a few required actions:
 
 1. Grant Codex full access permission before setup:
    - In Codex terminal, run `/permissions` and allow full access for setup.
