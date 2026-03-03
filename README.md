@@ -51,6 +51,7 @@ After setup, type `!ce-new` in control channel.
 - Multi-channel mode: each Discord channel can own one Codex session
   - New channels that match provisioning filters auto-start a detached Codex session
   - Messages posted in that channel route directly to that session
+  - New channels start with a default `new-channel`-style name and are auto-renamed from conversation context
 - OMX-compatible Discord env/config keys
 
 ## Prerequisites
@@ -211,6 +212,20 @@ codex-everywhere daemon stop
 codex-everywhere daemon start
 ```
 
+Optional: enable verbose Discord diagnostics (session id, tmux session/pane, injection target):
+
+```bash
+codex-everywhere daemon stop
+codex-everywhere daemon start --debug
+```
+
+Return to minimal user-facing messages:
+
+```bash
+codex-everywhere daemon stop
+codex-everywhere daemon start --no-debug
+```
+
 You can also set the same values in `~/.codex/.omx-config.json`:
 
 ```json
@@ -252,6 +267,8 @@ You can also set the same values in `~/.codex/.omx-config.json`:
 ```bash
 codex-everywhere daemon status
 codex-everywhere daemon start
+codex-everywhere daemon start --debug
+codex-everywhere daemon start --no-debug
 codex-everywhere daemon stop
 ```
 
@@ -337,8 +354,9 @@ Behavior:
 
 - Creates a new text channel in the same guild (and configured category if set).
 - Starts a new Codex session bound to that channel and directory.
+- New channel names default to `new-channel` style and are made unique automatically.
+- After early conversation messages, codex-everywhere auto-renames the channel to a topic-like slug (for example, `codex-print-hello-world`).
 - Sends a channel mention + link in control channel so you can jump there quickly.
-- Discord does not allow bots to force client focus switching; click the mention/link to switch.
 
 ### Discord-side Termination Command
 
@@ -353,6 +371,14 @@ To terminate from Discord directly, send one of these exact messages in the sess
 The daemon safely terminates the bound Codex session (graceful `/exit` first, force fallback if needed).  
 If the channel is a provisioned per-session channel, the channel is deleted after termination.
 After channel deletion, codex-everywhere posts a handoff message in the control channel.
+
+### Session Metadata Command
+
+In a session channel, send:
+
+- `!ce-meta`
+
+This reports bound session metadata (session id, channel id, routing key, tmux session, pane id, project path, timestamps) even when debug mode is off.
 
 If plain channel messages are injected as empty content, enable **Message Content Intent** for the bot in the Discord Developer Portal.  
 Replies/mentions may still work without it, but plain text command parsing is unreliable when that intent is disabled.

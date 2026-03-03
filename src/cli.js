@@ -36,7 +36,8 @@ const HELP = `codex-everywhere
 Usage:
   codex-everywhere [codex args...]
   codex-everywhere setup discord [options]
-  codex-everywhere daemon <start|stop|status>
+  codex-everywhere daemon start [--debug|--no-debug]
+  codex-everywhere daemon <stop|status>
   codex-everywhere sessions [list] [--all]
   codex-everywhere sessions attach [selector] [--pane] [--lines <n>] [--all]
   codex-everywhere sessions terminate [selector] [--all] [--wait <sec>] [--force]
@@ -359,9 +360,12 @@ async function deleteManagedChannelForTerminatedSession(session, trigger = 'cli'
   }
 
   const channelId = String(session.channelId).trim();
+  const debug = config.debug === true;
   await sendDiscordMessage(config.discordBot, {
     channelId,
-    content: `Session \`${session.sessionId}\` terminated by ${trigger}. This channel will now be deleted.`,
+    content: debug
+      ? `Session \`${session.sessionId}\` terminated by ${trigger}. This channel will now be deleted.`
+      : `Session terminated by ${trigger}. This channel will now be deleted.`,
   }).catch(() => {});
 
   await sleep(350);
@@ -390,7 +394,9 @@ async function deleteManagedChannelForTerminatedSession(session, trigger = 'cli'
     await sendDiscordMessage(config.discordBot, {
       channelId: controlChannelId,
       content: [
-        `Session \`${session.sessionId}\` finished via ${trigger}.`,
+        debug
+          ? `Session \`${session.sessionId}\` finished via ${trigger}.`
+          : `A Codex session finished via ${trigger}.`,
         `Continue here in <#${controlChannelId}>.`,
         'Create another session with `!ce-new [name] --cwd <path>`.',
       ].join('\n'),
@@ -591,9 +597,35 @@ async function runSession(codexArgs) {
   attachSession(tmuxSessionName);
 }
 
-async function handleDaemonCommand(command) {
+function parseDaemonCommandOptions(args) {
+  const command = String(args[0] || 'status').trim().toLowerCase();
+  let debug;
+
+  for (let idx = 1; idx < args.length; idx += 1) {
+    const token = String(args[idx] || '').trim();
+    if (token === '--debug') {
+      debug = true;
+      continue;
+    }
+    if (token === '--no-debug') {
+      debug = false;
+      continue;
+    }
+    throw new Error(`unknown daemon option: ${token}`);
+  }
+
+  if (typeof debug === 'boolean' && command !== 'start') {
+    throw new Error('`--debug` and `--no-debug` are only supported with `daemon start`');
+  }
+
+  return { command, debug };
+}
+
+async function handleDaemonCommand(args) {
+  const { command, debug } = parseDaemonCommandOptions(args);
+
   if (command === 'start') {
-    const result = await startDaemon();
+    const result = await startDaemon({ debug });
     console.log(result.message);
     process.exit(result.success ? 0 : 1);
   }
@@ -635,7 +667,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (first === 'daemon') {
-    await handleDaemonCommand(argv[1] || 'status');
+    await handleDaemonCommand(argv.slice(1));
     return;
   }
 

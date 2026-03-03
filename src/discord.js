@@ -472,3 +472,88 @@ export async function deleteDiscordChannel(config, channelId, reason = '') {
 
   return { success: false, error: lastError };
 }
+
+export async function updateDiscordChannel(config, channelId, options = {}) {
+  const resolvedChannelId = resolveChannelId(config, { channelId });
+  const tokens = tokenCandidates(config);
+  if (tokens.length === 0 || !resolvedChannelId) {
+    return { success: false, error: 'discord_not_configured' };
+  }
+
+  const body = {};
+  if (typeof options?.name === 'string') {
+    const normalizedName = options.name
+      .toLowerCase()
+      .replace(/[^a-z0-9-_]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 95);
+    if (!normalizedName) {
+      return { success: false, error: 'invalid_channel_name' };
+    }
+    body.name = normalizedName;
+  }
+
+  if (typeof options?.topic === 'string') {
+    body.topic = options.topic.trim().slice(0, 1024);
+  }
+
+  if (Object.keys(body).length === 0) {
+    return { success: false, error: 'no_channel_update_fields' };
+  }
+
+  const url = `https://discord.com/api/v10/channels/${resolvedChannelId}`;
+  const reasonText = String(options?.reason || '').trim();
+  let lastError = 'discord_update_channel_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    const headers = authHeaders(tokens[idx]);
+    if (reasonText) {
+      headers['X-Audit-Log-Reason'] = encodeURIComponent(reasonText).slice(0, 512);
+    }
+
+    try {
+      const response = await fetch(url, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        let apiCode = '';
+        let apiMessage = '';
+        try {
+          const payload = await response.json();
+          apiCode = payload && payload.code !== undefined ? String(payload.code) : '';
+          apiMessage = payload && payload.message !== undefined ? String(payload.message) : '';
+        } catch {
+          // ignore parse failure
+        }
+
+        const codePart = normalizeApiErrorFragment(apiCode);
+        const messagePart = normalizeApiErrorFragment(apiMessage);
+        const extras = [codePart, messagePart].filter(Boolean).join('_');
+        lastError = extras
+          ? `discord_http_${response.status}_${extras}`
+          : `discord_http_${response.status}`;
+
+        if ((response.status === 401 || response.status === 403) && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError };
+      }
+
+      const channel = await response.json().catch(() => null);
+      return {
+        success: true,
+        channel,
+        usedFallbackToken: idx > 0,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_update_channel_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError };
+    }
+  }
+
+  return { success: false, error: lastError };
+}

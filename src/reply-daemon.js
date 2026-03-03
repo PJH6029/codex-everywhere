@@ -4,7 +4,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { stat } from 'fs/promises';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
-import { basename, resolve } from 'path';
+import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
   DAEMON_LOCK_PATH,
@@ -21,6 +21,7 @@ import {
   getDiscordChannel,
   listGuildTextChannels,
   sendDiscordMessage,
+  updateDiscordChannel,
 } from './discord.js';
 import {
   pruneActiveSessions,
@@ -44,6 +45,7 @@ import {
   ensureDir,
   normalizeMultiline,
   nowIso,
+  parseBoolean,
   shellEscape,
   sleep,
   summarizeProject,
@@ -69,6 +71,7 @@ const DEFAULT_STATE = {
   errors: 0,
   lastError: '',
   lastApprovalBySession: {},
+  debug: false,
 };
 
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -264,7 +267,26 @@ export async function daemonStatus() {
   };
 }
 
-export async function startDaemon() {
+function resolveDaemonDebugValue(options = {}, fallback = false) {
+  if (typeof options?.debug === 'boolean') {
+    return options.debug;
+  }
+
+  if (typeof process.env.OMX_CE_DEBUG === 'string') {
+    return parseBoolean(process.env.OMX_CE_DEBUG, fallback);
+  }
+
+  if (typeof process.env.CODEX_EVERYWHERE_DEBUG === 'string') {
+    return parseBoolean(process.env.CODEX_EVERYWHERE_DEBUG, fallback);
+  }
+
+  return fallback;
+}
+
+export async function startDaemon(options = {}) {
+  const priorState = await readJson(DAEMON_STATE_PATH, DEFAULT_STATE);
+  const debug = resolveDaemonDebugValue(options, priorState?.debug === true);
+
   const conflicts = listConflictingReplyListenerPids();
   if (conflicts.length > 0) {
     return {
@@ -278,7 +300,17 @@ export async function startDaemon() {
   const runningPids = listReplyDaemonPids().filter((candidate) => candidate !== process.pid && isProcessAlive(candidate));
   if (runningPids.length > 0) {
     writePid(runningPids[0]);
-    return { success: true, message: `reply daemon already running (pid ${runningPids[0]})` };
+    if (typeof options?.debug === 'boolean') {
+      await writeJsonAtomic(DAEMON_STATE_PATH, {
+        ...DEFAULT_STATE,
+        ...priorState,
+        isRunning: true,
+        pid: runningPids[0],
+        startedAt: priorState?.startedAt || nowIso(),
+        debug,
+      });
+    }
+    return { success: true, message: `reply daemon already running (pid ${runningPids[0]}, debug ${debug ? 'on' : 'off'})` };
   }
 
   if (!isTmuxAvailable()) {
@@ -294,6 +326,7 @@ export async function startDaemon() {
     env: {
       ...process.env,
       CODEX_EVERYWHERE_DAEMON: '1',
+      CODEX_EVERYWHERE_DEBUG: debug ? '1' : '0',
     },
   });
 
@@ -307,12 +340,14 @@ export async function startDaemon() {
 
   await writeJsonAtomic(DAEMON_STATE_PATH, {
     ...DEFAULT_STATE,
+    ...priorState,
     isRunning: true,
     pid: child.pid,
     startedAt: nowIso(),
+    debug,
   });
 
-  return { success: true, message: `reply daemon started (pid ${child.pid})` };
+  return { success: true, message: `reply daemon started (pid ${child.pid}, debug ${debug ? 'on' : 'off'})` };
 }
 
 export async function stopDaemon() {
@@ -400,11 +435,16 @@ const TERMINATE_MESSAGE_COMMANDS = new Set([
   '!codex-terminate',
   '/exit',
 ]);
+const META_MESSAGE_COMMANDS = new Set([
+  '!ce-meta',
+  '!codex-meta',
+]);
 const CREATE_SESSION_MESSAGE_COMMANDS = new Set([
   '!ce-new',
   '!ce-create',
   '!codex-new',
 ]);
+const DEFAULT_NEW_CHANNEL_NAME = 'new-channel';
 
 function parseApprovalDecision(text) {
   const lowered = String(text ?? '').trim().toLowerCase();
@@ -428,6 +468,9 @@ function parseLifecycleCommand(text) {
   if (!normalized) return null;
   if (TERMINATE_MESSAGE_COMMANDS.has(normalized)) {
     return { kind: 'terminate-session' };
+  }
+  if (META_MESSAGE_COMMANDS.has(normalized)) {
+    return { kind: 'session-meta' };
   }
   return null;
 }
@@ -533,15 +576,138 @@ async function validateCwdDirectory(path) {
   }
 }
 
-function inferProvisionedChannelName(cwdPath, requestedName, config) {
+function inferProvisionedChannelName(_cwdPath, requestedName, config) {
   const prefix = String(config?.discordProvisioning?.channelPrefix || 'codex-').trim().toLowerCase() || 'codex-';
   const requested = String(requestedName || '').trim();
-  const base = requested || basename(cwdPath || process.cwd()) || 'session';
-  const slug = sanitizeName(base, 'session');
+  const base = requested || DEFAULT_NEW_CHANNEL_NAME;
+  const slug = sanitizeName(base, DEFAULT_NEW_CHANNEL_NAME);
   if (slug.startsWith(prefix)) {
     return slug.slice(0, 95);
   }
   return `${prefix}${slug}`.slice(0, 95);
+}
+
+function normalizeChannelName(name, fallback = DEFAULT_NEW_CHANNEL_NAME) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 95) || fallback;
+}
+
+function randomSuffix(length = 4) {
+  const raw = Math.floor(Math.random() * 36 ** Math.max(1, length))
+    .toString(36);
+  return raw.padStart(Math.max(1, length), '0').slice(0, Math.max(1, length));
+}
+
+async function makeUniqueChannelName(config, guildId, desiredName, excludeChannelId = '') {
+  const candidate = normalizeChannelName(desiredName);
+  const listed = await listGuildTextChannels(config.discordBot, guildId).catch(() => ({
+    success: false,
+    channels: [],
+  }));
+  if (!listed.success) return candidate;
+
+  const normalizedExclude = String(excludeChannelId || '').trim();
+  const existing = new Set(
+    listed.channels
+      .filter((channel) => String(channel?.id || '').trim() !== normalizedExclude)
+      .map((channel) => normalizeChannelName(channel?.name || '')),
+  );
+
+  if (!existing.has(candidate)) return candidate;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const suffix = randomSuffix(4 + Math.min(2, attempt));
+    const maxBaseLength = Math.max(1, 95 - suffix.length - 1);
+    const base = candidate.slice(0, maxBaseLength);
+    const next = `${base}-${suffix}`;
+    if (!existing.has(next)) return next;
+  }
+
+  return `${candidate.slice(0, 90)}-${Date.now().toString(36).slice(-4)}`;
+}
+
+function inferAutoChannelNameFromMessage(content, config) {
+  const normalized = String(content || '')
+    .toLowerCase()
+    .replace(/^(?:\[reply:discord\]\s*)+/g, '')
+    .replace(/^!ce-[a-z0-9_-]+(?:\s+.*)?$/g, '')
+    .replace(/^\$[a-z0-9_-]+(?:\s+.*)?$/g, '')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[^a-z0-9\s_-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return '';
+
+  const words = normalized.split(' ').filter(Boolean).slice(0, 8);
+  if (words.length === 0) return '';
+
+  const prefix = String(config?.discordProvisioning?.channelPrefix || 'codex-').trim().toLowerCase() || 'codex-';
+  const slug = sanitizeName(words.join('-'), '');
+  if (!slug) return '';
+  if (slug === DEFAULT_NEW_CHANNEL_NAME) return '';
+  return `${prefix}${slug}`.slice(0, 95);
+}
+
+async function maybeAutoRenameSessionChannel(config, state, session, messageContent) {
+  if (!session?.autoChannelNamePending) return session;
+  if (!session?.provisionedByChannel) return session;
+
+  const channelId = String(session.channelId || '').trim();
+  if (!channelId) return session;
+
+  const desiredName = inferAutoChannelNameFromMessage(messageContent, config);
+  if (!desiredName) return session;
+
+  const guildId = await ensureProvisionGuildId(config, state);
+  if (!guildId) return session;
+
+  const uniqueName = await makeUniqueChannelName(config, guildId, desiredName, channelId);
+  const currentName = normalizeChannelName(session.channelName || '');
+  if (uniqueName === currentName) {
+    const next = {
+      ...session,
+      autoChannelNamePending: false,
+      channelName: uniqueName,
+      autoChannelRenamedAt: nowIso(),
+    };
+    await upsertActiveSession(next).catch(() => {});
+    return next;
+  }
+
+  const renamed = await updateDiscordChannel(config.discordBot, channelId, {
+    name: uniqueName,
+    reason: 'codex-everywhere:auto-topic-channel-name',
+  }).catch(() => ({
+    success: false,
+    error: 'discord_update_channel_failed',
+  }));
+
+  if (!renamed.success) {
+    state.errors += 1;
+    state.lastError = renamed.error || 'discord_update_channel_failed';
+    return session;
+  }
+
+  const next = {
+    ...session,
+    channelName: uniqueName,
+    autoChannelNamePending: false,
+    autoChannelRenamedAt: nowIso(),
+  };
+
+  await upsertActiveSession(next).catch(() => {});
+  if (config.debug === true) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId,
+      content: `Auto-renamed channel to \`${uniqueName}\`.`,
+    }).catch(() => {});
+  }
+  return next;
 }
 
 function detectApprovalPrompt(content) {
@@ -660,6 +826,17 @@ function activeSessionByChannelId(sessions, channelId) {
   return null;
 }
 
+function activeSessionById(sessions, sessionId) {
+  const target = String(sessionId || '').trim();
+  if (!target) return null;
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    if (String(sessions[i]?.sessionId || '') === target) {
+      return sessions[i];
+    }
+  }
+  return null;
+}
+
 async function launchProvisionedSession(channel, config, options = {}) {
   const channelId = String(channel.id || '');
   const cwd = String(options.cwd || process.cwd());
@@ -668,6 +845,7 @@ async function launchProvisionedSession(channel, config, options = {}) {
   const channelName = sanitizeName(String(channel.name || ''), 'channel');
   const sessionName = `ce-${project}-${channelName}-${Date.now().toString(36).slice(-4)}`;
   const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId);
+  const autoChannelNamePending = options.autoChannelNamePending === true;
 
   const created = createDetachedSession(sessionName, cwd, runnerCommand);
 
@@ -678,6 +856,9 @@ async function launchProvisionedSession(channel, config, options = {}) {
     channelId,
     projectPath: cwd,
     startedAt: nowIso(),
+    channelName: normalizeChannelName(String(channel.name || ''), DEFAULT_NEW_CHANNEL_NAME),
+    channelRoutingKey: `discord:${channelId}`,
+    autoChannelNamePending,
     provisionedByChannel: options.provisionedByChannel !== false,
   });
 
@@ -746,7 +927,9 @@ async function sendControlChannelHandoff(config, session, trigger = 'terminate')
   await sendDiscordMessage(config.discordBot, {
     channelId: controlChannelId,
     content: [
-      `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`,
+      config?.debug === true
+        ? `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`
+        : `A Codex session finished via ${trigger}.`,
       `Continue here in <#${controlChannelId}>.`,
       'Create another session with `!ce-new [name] --cwd <path>`.',
     ].join('\n'),
@@ -789,7 +972,10 @@ async function terminateSessionFromDiscordCommand(session, config, sourceMessage
 
   await sendDiscordMessage(config.discordBot, {
     channelId,
-    content: `Session \`${session.sessionId}\` terminated by Discord command. This channel will now be deleted.`,
+    content:
+      config?.debug === true
+        ? `Session \`${session.sessionId}\` terminated by Discord command. This channel will now be deleted.`
+        : 'Session terminated by Discord command. This channel will now be deleted.',
     replyToMessageId: sourceMessageId || undefined,
   }).catch(() => {});
 
@@ -864,8 +1050,10 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
     return { handled: true, activeSessions };
   }
 
-  const channelName = inferProvisionedChannelName(requestedCwd, command?.name || '', config);
+  const requestedName = String(command?.name || '').trim();
+  const channelNameBase = inferProvisionedChannelName(requestedCwd, requestedName, config);
   const parentId = String(config?.discordProvisioning?.categoryId || '').trim();
+  const channelName = await makeUniqueChannelName(config, guildId, channelNameBase);
   const createResult = await createGuildTextChannel(config.discordBot, guildId, {
     name: channelName,
     parentId,
@@ -911,6 +1099,7 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
   const sessionRecord = await launchProvisionedSession(createdChannel, config, {
     cwd: requestedCwd,
     provisionedByChannel: true,
+    autoChannelNamePending: !requestedName,
   }).catch(() => null);
 
   if (!sessionRecord) {
@@ -932,10 +1121,11 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
   await sendDiscordMessage(config.discordBot, {
     channelId: controlChannelId,
     content: [
-      `Created <#${createdChannelId}> and started session \`${sessionRecord.sessionId}\`.`,
+      config?.debug === true
+        ? `Created <#${createdChannelId}> and started session \`${sessionRecord.sessionId}\`.`
+        : `Created <#${createdChannelId}> and started a new Codex session.`,
       `Directory: \`${requestedCwd}\``,
       `Open channel: ${channelLink}`,
-      'Discord cannot force-focus channel switching; click the channel mention/link above.',
     ].join('\n'),
     replyToMessageId: message.id,
   }).catch(() => {});
@@ -1042,7 +1232,10 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
 
       await sendDiscordMessage(config.discordBot, {
         channelId,
-        content: `Termination requested for session \`${session.sessionId}\`.`,
+        content:
+          config?.debug === true
+            ? `Termination requested for session \`${session.sessionId}\`.`
+            : 'Termination requested. Closing this Codex session.',
         replyToMessageId: message.id,
       }).catch(() => {});
 
@@ -1052,7 +1245,10 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
         state.lastError = terminated.error || 'session_terminate_failed';
         await sendDiscordMessage(config.discordBot, {
           channelId,
-          content: `Failed to terminate session \`${session.sessionId}\`: ${terminated.error || 'unknown error'}.`,
+          content:
+            config?.debug === true
+              ? `Failed to terminate session \`${session.sessionId}\`: ${terminated.error || 'unknown error'}.`
+              : `Failed to terminate this session: ${terminated.error || 'unknown error'}.`,
           replyToMessageId: message.id,
         }).catch(() => {});
         continue;
@@ -1068,10 +1264,55 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
           : '';
         await sendDiscordMessage(config.discordBot, {
           channelId,
-          content: `Session \`${session.sessionId}\` ${mode}.${suffix}`,
+          content:
+            config?.debug === true
+              ? `Session \`${session.sessionId}\` ${mode}.${suffix}`
+              : `Session ${mode}.${suffix}`,
           replyToMessageId: message.id,
         }).catch(() => {});
       }
+      continue;
+    }
+
+    if (lifecycle?.kind === 'session-meta') {
+      if (!limiter.canProceed()) {
+        state.errors += 1;
+        state.lastError = 'rate_limited';
+        continue;
+      }
+
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+
+      const session = activeSessionByChannelId(activeSessions, channelId);
+      if (!session) {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'No active Codex session is bound to this channel.',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content: [
+          '# Session Metadata',
+          '',
+          `Session: \`${session.sessionId || ''}\``,
+          `Channel ID: \`${session.channelId || ''}\``,
+          `Routing Key: \`${session.channelRoutingKey || `discord:${session.channelId || ''}`}\``,
+          `tmux: \`${session.tmuxSessionName || ''}\``,
+          `Pane: \`${session.paneId || ''}\``,
+          `Project: \`${session.projectPath || ''}\``,
+          session.startedAt ? `Started: \`${session.startedAt}\`` : null,
+          session.channelName ? `Channel Name: \`${session.channelName}\`` : null,
+          `Auto Name Pending: \`${session.autoChannelNamePending === true}\``,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        replyToMessageId: message.id,
+      }).catch(() => {});
       continue;
     }
 
@@ -1135,15 +1376,29 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
       state.messagesInjected += 1;
       processed.add(message.id);
       await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
-      const target = mapping.tmuxSessionName
-        ? `${mapping.tmuxSessionName} ${mapping.tmuxPaneId}`
-        : mapping.tmuxPaneId;
-      const action = mapping.kind === 'approval' ? 'Decision injected' : 'Message injected';
-      await sendDiscordMessage(config.discordBot, {
-        channelId,
-        content: `${action} into tmux target \`${target}\`.`,
-        replyToMessageId: message.id,
-      }).catch(() => {});
+      if (config?.debug === true) {
+        const target = mapping.tmuxSessionName
+          ? `${mapping.tmuxSessionName} ${mapping.tmuxPaneId}`
+          : mapping.tmuxPaneId;
+        const action = mapping.kind === 'approval' ? 'Decision injected' : 'Message injected';
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: `${action} into tmux target \`${target}\`.`,
+          replyToMessageId: message.id,
+        }).catch(() => {});
+      }
+
+      if (mapping.kind === 'chat') {
+        const active = activeSessionById(activeSessions, mapping.sessionId);
+        if (active?.autoChannelNamePending) {
+          const next = await maybeAutoRenameSessionChannel(config, state, active, userContent);
+          if (next && next.sessionId === active.sessionId) {
+            activeSessions = activeSessions.map((session) => (
+              session?.sessionId === active.sessionId ? { ...session, ...next } : session
+            ));
+          }
+        }
+      }
     } else {
       state.errors += 1;
       state.lastError = injectResult.reason;
@@ -1240,7 +1495,11 @@ async function provisionSessionsForNewChannels(config, state, activeSessions) {
         continue;
       }
 
-      const created = await launchProvisionedSession(channel, config).catch(() => null);
+      const defaultName = inferProvisionedChannelName(process.cwd(), '', config);
+      const channelName = normalizeChannelName(String(channel?.name || ''), '');
+      const created = await launchProvisionedSession(channel, config, {
+        autoChannelNamePending: channelName === normalizeChannelName(defaultName, ''),
+      }).catch(() => null);
       if (created) {
         nextSessions.push(created);
         count += 1;
@@ -1316,6 +1575,7 @@ async function runDaemonLoop() {
     ...DEFAULT_STATE,
     ...(await readJson(DAEMON_STATE_PATH, DEFAULT_STATE)),
   };
+  state.debug = resolveDaemonDebugValue({}, state.debug === true);
 
   state.isRunning = true;
   state.pid = process.pid;
@@ -1333,6 +1593,11 @@ async function runDaemonLoop() {
   process.on('SIGINT', shutdown);
 
   while (!stopRequested) {
+    const persistedState = await readJson(DAEMON_STATE_PATH, null);
+    if (persistedState && typeof persistedState?.debug === 'boolean') {
+      state.debug = persistedState.debug;
+    }
+
     const config = loadAppConfig();
 
     state.lastPollAt = nowIso();
@@ -1411,6 +1676,16 @@ async function runDaemonLoop() {
 
 async function main() {
   const command = process.argv[2] || 'status';
+  const flag = String(process.argv[3] || '').trim();
+  const debugOption = flag === '--debug'
+    ? true
+    : flag === '--no-debug'
+      ? false
+      : undefined;
+  if (flag && typeof debugOption === 'undefined') {
+    console.error('Usage: reply-daemon.js start [--debug|--no-debug]');
+    process.exit(1);
+  }
 
   if (command === 'run') {
     await runDaemonLoop();
@@ -1418,7 +1693,7 @@ async function main() {
   }
 
   if (command === 'start') {
-    const result = await startDaemon();
+    const result = await startDaemon({ debug: debugOption });
     console.log(result.message);
     process.exit(result.success ? 0 : 1);
   }
