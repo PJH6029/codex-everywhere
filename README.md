@@ -154,6 +154,18 @@ codex-everywhere sessions attach 1 --pane
 codex-everywhere sessions attach 1 --pane --lines 160
 ```
 
+Terminate a session safely (graceful `/exit` first):
+
+```bash
+codex-everywhere sessions terminate 1
+```
+
+If graceful exit stalls, force-kill the tmux target after a timeout:
+
+```bash
+codex-everywhere sessions terminate 1 --wait 8 --force
+```
+
 ## Permission Approval Flow
 
 When Codex asks for command approval, daemon sends a Discord message. Reply to that message with:

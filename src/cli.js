@@ -7,14 +7,22 @@ import { spawnSync } from 'child_process';
 import { loadAppConfig } from './config.js';
 import { notifyEvent } from './notify.js';
 import { startDaemon, stopDaemon, daemonStatus } from './reply-daemon.js';
-import { pruneActiveSessions, upsertActiveSession } from './active-sessions.js';
+import {
+  listActiveSessions,
+  pruneActiveSessions,
+  removeActiveSession,
+  upsertActiveSession,
+} from './active-sessions.js';
 import {
   attachSession,
   capturePane,
   createDetachedSession,
   createWindowInCurrentSession,
   isTmuxAvailable,
+  killPane,
+  killSession,
   listPaneIds,
+  sendLiteralToPane,
   selectWindow,
   sanitizeName,
   switchClientSession,
@@ -28,13 +36,14 @@ Usage:
   codex-everywhere daemon <start|stop|status>
   codex-everywhere sessions [list] [--all]
   codex-everywhere sessions attach [selector] [--pane] [--lines <n>] [--all]
+  codex-everywhere sessions terminate [selector] [--all] [--wait <sec>] [--force]
 
 Behavior:
   - Starts Codex in tmux
   - Sends Discord bot notifications (OMX-compatible config/env)
   - Accepts Discord replies and injects them into the Codex pane
   - Forwards Codex approval prompts through Discord and injects decisions
-  - Lists and opens tmux sessions that were created from Discord channels
+  - Lists, opens, and terminates tmux sessions created from Discord channels
 `;
 
 function codexInstalled() {
@@ -97,6 +106,8 @@ function parseSessionCommandOptions(args) {
     includeAll: false,
     paneMode: false,
     lines: 120,
+    force: false,
+    waitSeconds: 12,
   };
 
   for (let idx = 0; idx < args.length; idx += 1) {
@@ -109,12 +120,25 @@ function parseSessionCommandOptions(args) {
       parsed.paneMode = true;
       continue;
     }
+    if (token === '--force') {
+      parsed.force = true;
+      continue;
+    }
     if (token === '--lines') {
       const value = Number.parseInt(String(args[idx + 1] || ''), 10);
       if (!Number.isFinite(value) || value <= 0) {
         throw new Error('`--lines` must be a positive integer');
       }
       parsed.lines = value;
+      idx += 1;
+      continue;
+    }
+    if (token === '--wait') {
+      const value = Number.parseInt(String(args[idx + 1] || ''), 10);
+      if (!Number.isFinite(value) || value <= 0) {
+        throw new Error('`--wait` must be a positive integer');
+      }
+      parsed.waitSeconds = value;
       idx += 1;
       continue;
     }
@@ -215,11 +239,109 @@ function attachOrSwitchSession(sessionName) {
   attachSession(sessionName);
 }
 
+function optionEnabled(value) {
+  return value === true;
+}
+
+function assertUnsupportedOptions(options, unsupported, subcommand) {
+  for (const key of unsupported) {
+    if (key === 'selector' && options.selector) {
+      throw new Error('selector is not supported for this subcommand');
+    }
+    if (key === 'includeAll' && optionEnabled(options.includeAll)) {
+      throw new Error('`--all` is not supported for this subcommand');
+    }
+    if (key === 'lines' && options.lines !== 120) {
+      throw new Error(`\`--lines\` is not supported for sessions ${subcommand}`);
+    }
+    if (key === 'waitSeconds' && options.waitSeconds !== 12) {
+      throw new Error(`\`--wait\` is not supported for sessions ${subcommand}`);
+    }
+    if (optionEnabled(options[key])) {
+      const optionFlag = key === 'paneMode' ? '--pane' : `--${key}`;
+      throw new Error(`\`${optionFlag}\` is not supported for sessions ${subcommand}`);
+    }
+  }
+}
+
+async function waitForPaneExit(paneId, timeoutMs) {
+  const waitMs = Math.max(0, Math.trunc(timeoutMs));
+  const deadline = Date.now() + waitMs;
+
+  while (Date.now() < deadline) {
+    if (!listPaneIds().has(paneId)) {
+      return true;
+    }
+    await sleep(250);
+  }
+
+  return !listPaneIds().has(paneId);
+}
+
+async function shouldSendForcedTerminationNotice(sessionId) {
+  const sessions = await listActiveSessions();
+  return sessions.some((session) => session.sessionId === sessionId);
+}
+
+async function forceTerminateSession(selected, reason = 'terminated:force') {
+  const killBySession = selected.tmuxSessionName ? killSession(selected.tmuxSessionName) : false;
+  const killByPane = killBySession ? true : killPane(selected.paneId);
+
+  if (!killByPane) {
+    throw new Error('failed to force terminate tmux target');
+  }
+
+  await waitForPaneExit(selected.paneId, 2500);
+
+  const shouldNotify = await shouldSendForcedTerminationNotice(selected.sessionId);
+  await removeActiveSession(selected.sessionId).catch(() => {});
+
+  if (shouldNotify) {
+    await notifyWithRetry('session-end', {
+      sessionId: selected.sessionId,
+      paneId: selected.paneId,
+      tmuxSessionName: selected.tmuxSessionName || '',
+      channelId: selected.channelId || '',
+      projectPath: selected.projectPath || process.cwd(),
+      reason,
+    }, { attempts: 3, baseDelayMs: 600 });
+  }
+}
+
+async function terminateSession(selected, options) {
+  const paneId = String(selected?.paneId || '');
+  if (!paneId) {
+    throw new Error('selected session does not have a valid pane id');
+  }
+
+  const submitted = sendLiteralToPane(paneId, '/exit', true, 1);
+  if (!submitted) {
+    if (!options.force) {
+      throw new Error('failed to submit graceful `/exit` command to the selected pane');
+    }
+    await forceTerminateSession(selected, 'terminated:force-no-exit-submit');
+    return { terminated: true, forced: true };
+  }
+
+  const gracefulExited = await waitForPaneExit(paneId, options.waitSeconds * 1000);
+  if (gracefulExited) {
+    return { terminated: true, forced: false };
+  }
+
+  if (!options.force) {
+    throw new Error(`session did not exit within ${options.waitSeconds}s (retry with \`--force\`)`);
+  }
+
+  await forceTerminateSession(selected, 'terminated:force-timeout');
+  return { terminated: true, forced: true };
+}
+
 async function handleSessionsCommand(args) {
   const sub = args[0] || 'list';
 
   if (sub === 'list') {
     const options = parseSessionCommandOptions(args.slice(1));
+    assertUnsupportedOptions(options, ['selector', 'paneMode', 'lines', 'force', 'waitSeconds'], 'list');
     const sessions = await loadManagedSessions(options.includeAll);
     printSessionList(sessions, options.includeAll);
     return;
@@ -227,6 +349,7 @@ async function handleSessionsCommand(args) {
 
   if (sub === 'attach') {
     const options = parseSessionCommandOptions(args.slice(1));
+    assertUnsupportedOptions(options, ['force', 'waitSeconds'], 'attach');
     const sessions = await loadManagedSessions(options.includeAll);
     const selected = resolveSessionSelector(sessions, options.selector);
 
@@ -251,7 +374,30 @@ async function handleSessionsCommand(args) {
     return;
   }
 
-  throw new Error('unknown sessions command. Use `sessions list` or `sessions attach`');
+  if (sub === 'terminate' || sub === 'stop' || sub === 'kill') {
+    const options = parseSessionCommandOptions(args.slice(1));
+    assertUnsupportedOptions(options, ['paneMode', 'lines'], 'terminate');
+    const sessions = await loadManagedSessions(options.includeAll);
+    const selected = resolveSessionSelector(sessions, options.selector);
+
+    if (!selected) {
+      printSessionList(sessions, options.includeAll);
+      if (!options.selector && sessions.length > 1) {
+        throw new Error('multiple sessions found; provide a selector (index, channel id, session id, pane id, or tmux session name)');
+      }
+      throw new Error(`session not found for selector: ${options.selector || '(empty)'}`);
+    }
+
+    const result = await terminateSession(selected, options);
+    if (result.forced) {
+      console.log(`[codex-everywhere] force-terminated session ${selected.sessionId}`);
+      return;
+    }
+    console.log(`[codex-everywhere] graceful termination requested for session ${selected.sessionId}`);
+    return;
+  }
+
+  throw new Error('unknown sessions command. Use `sessions list`, `sessions attach`, or `sessions terminate`');
 }
 
 async function notifyWithRetry(event, payload, options = {}) {

@@ -124,6 +124,24 @@ export function switchClientSession(sessionName) {
   return result.ok;
 }
 
+export function killSession(sessionName) {
+  if (!sessionName) return false;
+  const result = runTmux(['kill-session', '-t', String(sessionName)], {
+    timeout: 3000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return result.ok;
+}
+
+export function killPane(paneId) {
+  if (!paneId || !/^%\d+$/.test(String(paneId))) return false;
+  const result = runTmux(['kill-pane', '-t', String(paneId)], {
+    timeout: 3000,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return result.ok;
+}
+
 export function capturePane(paneId, lines = 80) {
   if (!paneId || !/^%\d+$/.test(String(paneId))) return '';
 
