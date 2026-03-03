@@ -57,7 +57,10 @@ Recommended flow:
 1. `npm link`
 2. `codex-everywhere`
 3. Run `/setup-discord` in Codex (or tell Codex to use local `setup-discord` skill)
-4. In Discord control channel, type `!ce-new`
+4. Skill creates/uses server `codex-everywhere-server` and default control channel (`일반`/`general`)
+5. In Discord control channel, type `!ce-new`
+
+Note: guild/server creation itself is performed through Discord Web UI automation (Playwright-assisted), not via bot REST API.
 
 ## Discord Configuration
 
@@ -125,6 +128,17 @@ Instead of manual env/config editing:
 ```bash
 codex-everywhere setup discord \
   --bot-token "<DISCORD_BOT_TOKEN>" \
+  --guild-name "codex-everywhere-server" \
+  --authorized-user-id auto
+```
+
+This resolves control channel automatically from default names (`일반` or `general`).
+
+If you already know channel id, explicit channel mode is still supported:
+
+```bash
+codex-everywhere setup discord \
+  --bot-token "<DISCORD_BOT_TOKEN>" \
   --control-channel-id "<CONTROL_CHANNEL_ID>" \
   --authorized-user-id auto
 ```
@@ -135,7 +149,7 @@ If auto-discovery fails, pass explicit user id:
 ```bash
 codex-everywhere setup discord \
   --bot-token "<DISCORD_BOT_TOKEN>" \
-  --control-channel-id "<CONTROL_CHANNEL_ID>" \
+  --guild-name "codex-everywhere-server" \
   --authorized-user-id "<YOUR_USER_ID>"
 ```
 

@@ -2,7 +2,13 @@ import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname } from 'path';
 import { OMX_CONFIG_PATH } from './constants.js';
-import { fetchChannelMessages, getDiscordChannel, sendDiscordMessage } from './discord.js';
+import {
+  fetchChannelMessages,
+  getDiscordChannel,
+  listCurrentUserGuilds,
+  listGuildTextChannels,
+  sendDiscordMessage,
+} from './discord.js';
 import { clampInt, parseBoolean, parseDiscordIds } from './utils.js';
 
 const DISCORD_ID_PATTERN = /^\d{17,20}$/;
@@ -10,9 +16,13 @@ const DISCORD_ID_PATTERN = /^\d{17,20}$/;
 function usageText() {
   return [
     'Usage:',
-    '  codex-everywhere setup discord --bot-token <token> --control-channel-id <id> [options]',
+    '  codex-everywhere setup discord --bot-token <token> [--control-channel-id <id> | --guild-name <name>] [options]',
     '',
     'Options:',
+    '  --control-channel-id <id>            explicit control channel id (optional if guild/name resolution is used)',
+    '  --guild-id <id>                      optional guild id for control channel auto-resolution',
+    '  --guild-name <name>                  default: codex-everywhere-server',
+    '  --control-channel-name <name>        default: auto (일반, general)',
     '  --authorized-user-id <id|auto>       default: auto (discover from latest non-bot message)',
     '  --authorized-user-ids <id,id,...>    explicit csv list',
     '  --mention-user-id <id>               optional user mention target',
@@ -28,7 +38,8 @@ function usageText() {
     '',
     'Examples:',
     '  codex-everywhere setup discord --bot-token "$BOT" --control-channel-id 123 --authorized-user-id auto',
-    '  codex-everywhere setup discord --bot-token "$BOT" --control-channel-id 123 --authorized-user-ids 111,222',
+    '  codex-everywhere setup discord --bot-token "$BOT" --guild-name "codex-everywhere-server" --authorized-user-id auto',
+    '  codex-everywhere setup discord --bot-token "$BOT" --guild-id 999 --control-channel-name "general" --authorized-user-ids 111,222',
   ].join('\n');
 }
 
@@ -36,6 +47,9 @@ function parseArgs(args) {
   const parsed = {
     botToken: '',
     controlChannelId: '',
+    guildId: '',
+    guildName: 'codex-everywhere-server',
+    controlChannelName: '',
     authorizedUserId: 'auto',
     authorizedUserIdsCsv: '',
     mentionUserId: '',
@@ -67,6 +81,21 @@ function parseArgs(args) {
     }
     if (token === '--control-channel-id') {
       parsed.controlChannelId = String(args[idx + 1] || '').trim();
+      idx += 1;
+      continue;
+    }
+    if (token === '--guild-id') {
+      parsed.guildId = String(args[idx + 1] || '').trim();
+      idx += 1;
+      continue;
+    }
+    if (token === '--guild-name') {
+      parsed.guildName = String(args[idx + 1] || '').trim() || parsed.guildName;
+      idx += 1;
+      continue;
+    }
+    if (token === '--control-channel-name') {
+      parsed.controlChannelName = String(args[idx + 1] || '').trim();
       idx += 1;
       continue;
     }
@@ -135,8 +164,14 @@ function validateArgs(parsed) {
   if (!parsed.botToken) {
     throw new Error('missing --bot-token');
   }
-  if (!DISCORD_ID_PATTERN.test(parsed.controlChannelId)) {
+  if (parsed.controlChannelId && !DISCORD_ID_PATTERN.test(parsed.controlChannelId)) {
     throw new Error('invalid --control-channel-id (must be Discord snowflake)');
+  }
+  if (parsed.guildId && !DISCORD_ID_PATTERN.test(parsed.guildId)) {
+    throw new Error('invalid --guild-id (must be Discord snowflake)');
+  }
+  if (!parsed.controlChannelId && !parsed.guildName && !parsed.guildId) {
+    throw new Error('provide --control-channel-id or --guild-name/--guild-id');
   }
   if (parsed.mentionUserId && !DISCORD_ID_PATTERN.test(parsed.mentionUserId)) {
     throw new Error('invalid --mention-user-id (must be Discord snowflake)');
@@ -189,7 +224,68 @@ async function resolveAuthorizedUserIds(parsed, discordConfig) {
   );
 }
 
-function buildNotificationsPatch(parsed, authorizedUserIds) {
+function normalizeNameLower(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+async function resolveControlChannelId(parsed, discordConfig) {
+  if (parsed.controlChannelId) {
+    return parsed.controlChannelId;
+  }
+
+  const guildsResult = await listCurrentUserGuilds(discordConfig, 200);
+  if (!guildsResult.success) {
+    throw new Error(`failed to list guilds: ${guildsResult.error || 'discord_list_guilds_failed'}`);
+  }
+
+  const guilds = Array.isArray(guildsResult.guilds) ? guildsResult.guilds : [];
+  const targetGuildId = String(parsed.guildId || '').trim();
+  const targetGuildName = normalizeNameLower(parsed.guildName || '');
+
+  let guild = null;
+  if (targetGuildId) {
+    guild = guilds.find((item) => String(item?.id || '') === targetGuildId) || null;
+    if (!guild) {
+      throw new Error(`guild not found for --guild-id ${targetGuildId}`);
+    }
+  } else {
+    const matches = guilds.filter((item) => normalizeNameLower(item?.name || '') === targetGuildName);
+    if (matches.length === 0) {
+      throw new Error(
+        `guild not found for --guild-name "${parsed.guildName}". Create it first (e.g. via Discord UI/Playwright) or pass --control-channel-id.`,
+      );
+    }
+    if (matches.length > 1) {
+      throw new Error(
+        `multiple guilds match --guild-name "${parsed.guildName}". Pass --guild-id or --control-channel-id.`,
+      );
+    }
+    guild = matches[0];
+  }
+
+  const guildId = String(guild?.id || '');
+  const channelsResult = await listGuildTextChannels(discordConfig, guildId);
+  if (!channelsResult.success) {
+    throw new Error(`failed to list channels in guild ${guildId}: ${channelsResult.error || 'discord_list_channels_failed'}`);
+  }
+
+  const channels = Array.isArray(channelsResult.channels) ? channelsResult.channels : [];
+  const requested = normalizeNameLower(parsed.controlChannelName || '');
+  const preferredNames = requested ? [requested] : ['일반', 'general'];
+
+  for (const name of preferredNames) {
+    const hit = channels.find((channel) => normalizeNameLower(channel?.name || '') === name);
+    if (hit?.id) {
+      return String(hit.id);
+    }
+  }
+
+  throw new Error(
+    `control channel not found in guild "${guild?.name || guildId}" for names: ${preferredNames.join(', ')}`,
+  );
+}
+
+function buildNotificationsPatch(parsed, authorizedUserIds, controlChannelId) {
   const mentionUserId = parsed.mentionUserId || authorizedUserIds[0] || '';
 
   return {
@@ -200,7 +296,7 @@ function buildNotificationsPatch(parsed, authorizedUserIds) {
     'discord-bot': {
       enabled: true,
       botToken: parsed.botToken,
-      channelId: parsed.controlChannelId,
+      channelId: controlChannelId,
       mention: mentionUserId ? `<@${mentionUserId}>` : '',
       provisioning: {
         enabled: parsed.provisionEnabled,
@@ -286,19 +382,28 @@ export async function runDiscordSetupCommand(args = []) {
     enabled: true,
     botToken: parsed.botToken,
     fallbackBotToken: '',
-    channelId: parsed.controlChannelId,
+    channelId: parsed.controlChannelId || '',
     mention: '',
   };
 
-  const channelCheck = await getDiscordChannel(discordConfig, parsed.controlChannelId);
+  const controlChannelId = await resolveControlChannelId(parsed, discordConfig);
+  const channelCheck = await getDiscordChannel(discordConfig, controlChannelId);
   if (!channelCheck.success) {
     throw new Error(
-      `Discord control channel validation failed: ${channelCheck.error || 'discord_channel_lookup_failed'}`,
+      `Discord control channel validation failed (${controlChannelId}): ${channelCheck.error || 'discord_channel_lookup_failed'}`,
     );
   }
 
-  const authorizedUserIds = await resolveAuthorizedUserIds(parsed, discordConfig);
-  const patch = buildNotificationsPatch(parsed, authorizedUserIds);
+  const effectiveDiscordConfig = {
+    ...discordConfig,
+    channelId: controlChannelId,
+  };
+
+  const authorizedUserIds = await resolveAuthorizedUserIds({
+    ...parsed,
+    controlChannelId,
+  }, effectiveDiscordConfig);
+  const patch = buildNotificationsPatch(parsed, authorizedUserIds, controlChannelId);
   const current = await readExistingConfig(parsed.configPath);
   const merged = mergeNotifications(current, patch);
   await writeConfig(parsed.configPath, merged);
@@ -307,23 +412,23 @@ export async function runDiscordSetupCommand(args = []) {
     const preview = [
       '# codex-everywhere setup complete',
       '',
-      `Control channel configured: \`${parsed.controlChannelId}\``,
+      `Control channel configured: \`${controlChannelId}\``,
       `Authorized user ids: \`${authorizedUserIds.join(', ')}\``,
       'Next: run `codex-everywhere daemon start` then type `!ce-new` in this channel.',
     ].join('\n');
 
     await sendDiscordMessage({
-      ...discordConfig,
+      ...effectiveDiscordConfig,
       mention: patch['discord-bot'].mention || '',
     }, {
-      channelId: parsed.controlChannelId,
+      channelId: controlChannelId,
       content: preview,
     }).catch(() => {});
   }
 
   console.log('[codex-everywhere] Discord setup written successfully');
   console.log(`[codex-everywhere] config: ${parsed.configPath}`);
-  console.log(`[codex-everywhere] control channel: ${parsed.controlChannelId}`);
+  console.log(`[codex-everywhere] control channel: ${controlChannelId}`);
   console.log(`[codex-everywhere] authorized users: ${authorizedUserIds.join(', ')}`);
   console.log('[codex-everywhere] next: codex-everywhere daemon stop && codex-everywhere daemon start');
 }

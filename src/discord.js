@@ -278,6 +278,64 @@ export async function listGuildTextChannels(config, guildId) {
   return { success: false, error: lastError, channels: [] };
 }
 
+export async function listCurrentUserGuilds(config, limit = 200) {
+  const tokens = tokenCandidates(config);
+  if (tokens.length === 0) {
+    return { success: false, error: 'discord_not_configured', guilds: [] };
+  }
+
+  const query = new URLSearchParams();
+  query.set('limit', String(Math.max(1, Math.min(200, limit))));
+  const url = `https://discord.com/api/v10/users/@me/guilds?${query.toString()}`;
+
+  let lastError = 'discord_list_guilds_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: authHeaders(tokens[idx]),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        let apiCode = '';
+        let apiMessage = '';
+        try {
+          const payload = await response.json();
+          apiCode = payload && payload.code !== undefined ? String(payload.code) : '';
+          apiMessage = payload && payload.message !== undefined ? String(payload.message) : '';
+        } catch {
+          // ignore parse failure
+        }
+
+        const codePart = normalizeApiErrorFragment(apiCode);
+        const messagePart = normalizeApiErrorFragment(apiMessage);
+        const extras = [codePart, messagePart].filter(Boolean).join('_');
+        lastError = extras
+          ? `discord_http_${response.status}_${extras}`
+          : `discord_http_${response.status}`;
+
+        if ((response.status === 401 || response.status === 403) && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError, guilds: [] };
+      }
+
+      const guilds = await response.json().catch(() => []);
+      return {
+        success: true,
+        guilds: Array.isArray(guilds) ? guilds : [],
+        usedFallbackToken: idx > 0,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_list_guilds_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError, guilds: [] };
+    }
+  }
+
+  return { success: false, error: lastError, guilds: [] };
+}
+
 export async function createGuildTextChannel(config, guildId, options = {}) {
   const resolvedGuildId = String(guildId || '').trim();
   const tokens = tokenCandidates(config);

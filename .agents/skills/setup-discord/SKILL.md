@@ -6,6 +6,11 @@ Use this skill to bootstrap Discord for `codex-everywhere` with minimal manual s
 
 After running this skill, user should be able to type `!ce-new` in control channel and start working.
 
+Target defaults:
+
+- Server (guild) name: `codex-everywhere-server`
+- Control channel name: `일반` (Korean) or `general` (English)
+
 ## Inputs to collect
 
 - Discord Developer Portal login (user performs this in browser)
@@ -36,16 +41,18 @@ After running this skill, user should be able to type `!ce-new` in control chann
      - `Add Reactions`
      - `Manage Channels`
    - Open generated URL and complete invite.
-5. Prepare control channel:
-   - In Discord app, select/create control channel.
-   - Copy control channel id (Developer Mode).
-   - Ask user to send one normal text message in that channel (needed for auto user-id discovery).
-6. Apply local config (single command):
-   - `codex-everywhere setup discord --bot-token "<TOKEN>" --control-channel-id "<CHANNEL_ID>" --authorized-user-id auto`
-7. Start daemon:
+5. Create server/guild (Playwright on Discord Web):
+   - Create server named `codex-everywhere-server`.
+   - Keep the default first text channel (`일반` or `general` depending on locale).
+6. Prepare control channel:
+   - Ask user to send one normal text message in that default channel (needed for auto user-id discovery).
+7. Apply local config (single command, no channel-id copy needed):
+   - `codex-everywhere setup discord --bot-token "<TOKEN>" --guild-name "codex-everywhere-server" --authorized-user-id auto`
+   - Optional locale explicit: `--control-channel-name "일반"` or `--control-channel-name "general"`
+8. Start daemon:
    - `codex-everywhere daemon stop`
    - `codex-everywhere daemon start`
-8. Verify:
+9. Verify:
    - In control channel: `!ce-new`
    - Confirm new channel/session appears.
 
