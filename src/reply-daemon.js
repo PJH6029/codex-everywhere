@@ -4,7 +4,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { stat } from 'fs/promises';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
-import { basename, resolve } from 'path';
+import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
   DAEMON_LOCK_PATH,
@@ -21,6 +21,7 @@ import {
   getDiscordChannel,
   listGuildTextChannels,
   sendDiscordMessage,
+  updateDiscordChannel,
 } from './discord.js';
 import {
   pruneActiveSessions,
@@ -434,11 +435,16 @@ const TERMINATE_MESSAGE_COMMANDS = new Set([
   '!codex-terminate',
   '/exit',
 ]);
+const META_MESSAGE_COMMANDS = new Set([
+  '!ce-meta',
+  '!codex-meta',
+]);
 const CREATE_SESSION_MESSAGE_COMMANDS = new Set([
   '!ce-new',
   '!ce-create',
   '!codex-new',
 ]);
+const DEFAULT_NEW_CHANNEL_NAME = 'new-channel';
 
 function parseApprovalDecision(text) {
   const lowered = String(text ?? '').trim().toLowerCase();
@@ -462,6 +468,9 @@ function parseLifecycleCommand(text) {
   if (!normalized) return null;
   if (TERMINATE_MESSAGE_COMMANDS.has(normalized)) {
     return { kind: 'terminate-session' };
+  }
+  if (META_MESSAGE_COMMANDS.has(normalized)) {
+    return { kind: 'session-meta' };
   }
   return null;
 }
@@ -567,15 +576,138 @@ async function validateCwdDirectory(path) {
   }
 }
 
-function inferProvisionedChannelName(cwdPath, requestedName, config) {
+function inferProvisionedChannelName(_cwdPath, requestedName, config) {
   const prefix = String(config?.discordProvisioning?.channelPrefix || 'codex-').trim().toLowerCase() || 'codex-';
   const requested = String(requestedName || '').trim();
-  const base = requested || basename(cwdPath || process.cwd()) || 'session';
-  const slug = sanitizeName(base, 'session');
+  const base = requested || DEFAULT_NEW_CHANNEL_NAME;
+  const slug = sanitizeName(base, DEFAULT_NEW_CHANNEL_NAME);
   if (slug.startsWith(prefix)) {
     return slug.slice(0, 95);
   }
   return `${prefix}${slug}`.slice(0, 95);
+}
+
+function normalizeChannelName(name, fallback = DEFAULT_NEW_CHANNEL_NAME) {
+  return String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 95) || fallback;
+}
+
+function randomSuffix(length = 4) {
+  const raw = Math.floor(Math.random() * 36 ** Math.max(1, length))
+    .toString(36);
+  return raw.padStart(Math.max(1, length), '0').slice(0, Math.max(1, length));
+}
+
+async function makeUniqueChannelName(config, guildId, desiredName, excludeChannelId = '') {
+  const candidate = normalizeChannelName(desiredName);
+  const listed = await listGuildTextChannels(config.discordBot, guildId).catch(() => ({
+    success: false,
+    channels: [],
+  }));
+  if (!listed.success) return candidate;
+
+  const normalizedExclude = String(excludeChannelId || '').trim();
+  const existing = new Set(
+    listed.channels
+      .filter((channel) => String(channel?.id || '').trim() !== normalizedExclude)
+      .map((channel) => normalizeChannelName(channel?.name || '')),
+  );
+
+  if (!existing.has(candidate)) return candidate;
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const suffix = randomSuffix(4 + Math.min(2, attempt));
+    const maxBaseLength = Math.max(1, 95 - suffix.length - 1);
+    const base = candidate.slice(0, maxBaseLength);
+    const next = `${base}-${suffix}`;
+    if (!existing.has(next)) return next;
+  }
+
+  return `${candidate.slice(0, 90)}-${Date.now().toString(36).slice(-4)}`;
+}
+
+function inferAutoChannelNameFromMessage(content, config) {
+  const normalized = String(content || '')
+    .toLowerCase()
+    .replace(/^(?:\[reply:discord\]\s*)+/g, '')
+    .replace(/^!ce-[a-z0-9_-]+(?:\s+.*)?$/g, '')
+    .replace(/^\$[a-z0-9_-]+(?:\s+.*)?$/g, '')
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[^a-z0-9\s_-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return '';
+
+  const words = normalized.split(' ').filter(Boolean).slice(0, 8);
+  if (words.length === 0) return '';
+
+  const prefix = String(config?.discordProvisioning?.channelPrefix || 'codex-').trim().toLowerCase() || 'codex-';
+  const slug = sanitizeName(words.join('-'), '');
+  if (!slug) return '';
+  if (slug === DEFAULT_NEW_CHANNEL_NAME) return '';
+  return `${prefix}${slug}`.slice(0, 95);
+}
+
+async function maybeAutoRenameSessionChannel(config, state, session, messageContent) {
+  if (!session?.autoChannelNamePending) return session;
+  if (!session?.provisionedByChannel) return session;
+
+  const channelId = String(session.channelId || '').trim();
+  if (!channelId) return session;
+
+  const desiredName = inferAutoChannelNameFromMessage(messageContent, config);
+  if (!desiredName) return session;
+
+  const guildId = await ensureProvisionGuildId(config, state);
+  if (!guildId) return session;
+
+  const uniqueName = await makeUniqueChannelName(config, guildId, desiredName, channelId);
+  const currentName = normalizeChannelName(session.channelName || '');
+  if (uniqueName === currentName) {
+    const next = {
+      ...session,
+      autoChannelNamePending: false,
+      channelName: uniqueName,
+      autoChannelRenamedAt: nowIso(),
+    };
+    await upsertActiveSession(next).catch(() => {});
+    return next;
+  }
+
+  const renamed = await updateDiscordChannel(config.discordBot, channelId, {
+    name: uniqueName,
+    reason: 'codex-everywhere:auto-topic-channel-name',
+  }).catch(() => ({
+    success: false,
+    error: 'discord_update_channel_failed',
+  }));
+
+  if (!renamed.success) {
+    state.errors += 1;
+    state.lastError = renamed.error || 'discord_update_channel_failed';
+    return session;
+  }
+
+  const next = {
+    ...session,
+    channelName: uniqueName,
+    autoChannelNamePending: false,
+    autoChannelRenamedAt: nowIso(),
+  };
+
+  await upsertActiveSession(next).catch(() => {});
+  if (config.debug === true) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId,
+      content: `Auto-renamed channel to \`${uniqueName}\`.`,
+    }).catch(() => {});
+  }
+  return next;
 }
 
 function detectApprovalPrompt(content) {
@@ -694,6 +826,17 @@ function activeSessionByChannelId(sessions, channelId) {
   return null;
 }
 
+function activeSessionById(sessions, sessionId) {
+  const target = String(sessionId || '').trim();
+  if (!target) return null;
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    if (String(sessions[i]?.sessionId || '') === target) {
+      return sessions[i];
+    }
+  }
+  return null;
+}
+
 async function launchProvisionedSession(channel, config, options = {}) {
   const channelId = String(channel.id || '');
   const cwd = String(options.cwd || process.cwd());
@@ -702,6 +845,7 @@ async function launchProvisionedSession(channel, config, options = {}) {
   const channelName = sanitizeName(String(channel.name || ''), 'channel');
   const sessionName = `ce-${project}-${channelName}-${Date.now().toString(36).slice(-4)}`;
   const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId);
+  const autoChannelNamePending = options.autoChannelNamePending === true;
 
   const created = createDetachedSession(sessionName, cwd, runnerCommand);
 
@@ -712,6 +856,9 @@ async function launchProvisionedSession(channel, config, options = {}) {
     channelId,
     projectPath: cwd,
     startedAt: nowIso(),
+    channelName: normalizeChannelName(String(channel.name || ''), DEFAULT_NEW_CHANNEL_NAME),
+    channelRoutingKey: `discord:${channelId}`,
+    autoChannelNamePending,
     provisionedByChannel: options.provisionedByChannel !== false,
   });
 
@@ -903,8 +1050,10 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
     return { handled: true, activeSessions };
   }
 
-  const channelName = inferProvisionedChannelName(requestedCwd, command?.name || '', config);
+  const requestedName = String(command?.name || '').trim();
+  const channelNameBase = inferProvisionedChannelName(requestedCwd, requestedName, config);
   const parentId = String(config?.discordProvisioning?.categoryId || '').trim();
+  const channelName = await makeUniqueChannelName(config, guildId, channelNameBase);
   const createResult = await createGuildTextChannel(config.discordBot, guildId, {
     name: channelName,
     parentId,
@@ -950,6 +1099,7 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
   const sessionRecord = await launchProvisionedSession(createdChannel, config, {
     cwd: requestedCwd,
     provisionedByChannel: true,
+    autoChannelNamePending: !requestedName,
   }).catch(() => null);
 
   if (!sessionRecord) {
@@ -1124,6 +1274,48 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
       continue;
     }
 
+    if (lifecycle?.kind === 'session-meta') {
+      if (!limiter.canProceed()) {
+        state.errors += 1;
+        state.lastError = 'rate_limited';
+        continue;
+      }
+
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+
+      const session = activeSessionByChannelId(activeSessions, channelId);
+      if (!session) {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'No active Codex session is bound to this channel.',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content: [
+          '# Session Metadata',
+          '',
+          `Session: \`${session.sessionId || ''}\``,
+          `Channel ID: \`${session.channelId || ''}\``,
+          `Routing Key: \`${session.channelRoutingKey || `discord:${session.channelId || ''}`}\``,
+          `tmux: \`${session.tmuxSessionName || ''}\``,
+          `Pane: \`${session.paneId || ''}\``,
+          `Project: \`${session.projectPath || ''}\``,
+          session.startedAt ? `Started: \`${session.startedAt}\`` : null,
+          session.channelName ? `Channel Name: \`${session.channelName}\`` : null,
+          `Auto Name Pending: \`${session.autoChannelNamePending === true}\``,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        replyToMessageId: message.id,
+      }).catch(() => {});
+      continue;
+    }
+
     const referenceId = message?.message_reference?.message_id || '';
     const mappedByReference = referenceId ? await lookupMessageMapping(referenceId) : null;
 
@@ -1194,6 +1386,18 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
           content: `${action} into tmux target \`${target}\`.`,
           replyToMessageId: message.id,
         }).catch(() => {});
+      }
+
+      if (mapping.kind === 'chat') {
+        const active = activeSessionById(activeSessions, mapping.sessionId);
+        if (active?.autoChannelNamePending) {
+          const next = await maybeAutoRenameSessionChannel(config, state, active, userContent);
+          if (next && next.sessionId === active.sessionId) {
+            activeSessions = activeSessions.map((session) => (
+              session?.sessionId === active.sessionId ? { ...session, ...next } : session
+            ));
+          }
+        }
       }
     } else {
       state.errors += 1;
@@ -1291,7 +1495,11 @@ async function provisionSessionsForNewChannels(config, state, activeSessions) {
         continue;
       }
 
-      const created = await launchProvisionedSession(channel, config).catch(() => null);
+      const defaultName = inferProvisionedChannelName(process.cwd(), '', config);
+      const channelName = normalizeChannelName(String(channel?.name || ''), '');
+      const created = await launchProvisionedSession(channel, config, {
+        autoChannelNamePending: channelName === normalizeChannelName(defaultName, ''),
+      }).catch(() => null);
       if (created) {
         nextSessions.push(created);
         count += 1;

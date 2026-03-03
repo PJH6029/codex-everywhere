@@ -47,16 +47,10 @@ function formatTurnComplete(payload, debug = false) {
   const content = truncate(payload.content || '', 1600);
   const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
 
-  return [
-    '# Codex Response',
-    '',
-    content || '(empty response)',
-    '',
-    debug && payload.sessionId ? `Session: \`${payload.sessionId}\`` : null,
-    debug && target ? `Target: \`${target}\`` : null,
-  ]
-    .filter(Boolean)
-    .join('\n');
+  const lines = [content || '(empty response)'];
+  if (debug && payload.sessionId) lines.push('', `Session: \`${payload.sessionId}\``);
+  if (debug && target) lines.push(`Target: \`${target}\``);
+  return lines.join('\n');
 }
 
 function formatUserInput(payload, debug = false) {
