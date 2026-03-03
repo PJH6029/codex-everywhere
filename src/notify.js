@@ -10,6 +10,7 @@ function eventEnabled(config, event) {
   if (event === 'session-start') return config.events.sessionStart;
   if (event === 'session-end') return config.events.sessionEnd;
   if (event === 'turn-complete') return config.events.turnComplete;
+  if (event === 'user-input') return config.events.userInput;
   if (event === 'approval-request') return config.events.approvalRequest;
   return true;
 }
@@ -58,6 +59,22 @@ function formatTurnComplete(payload) {
   ].join('\n');
 }
 
+function formatUserInput(payload) {
+  const content = truncate(payload.content || '', 1600);
+  const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
+
+  return [
+    '# User Input (tmux)',
+    '',
+    content ? `\`\`\`text\n${content}\n\`\`\`` : '(empty input)',
+    '',
+    payload.sessionId ? `Session: \`${payload.sessionId}\`` : null,
+    target ? `Target: \`${target}\`` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function formatApprovalRequest(payload) {
   const command = payload.command ? `\`\`\`bash\n${truncate(payload.command, 600)}\n\`\`\`` : 'Command not detected from pane output.';
 
@@ -75,6 +92,7 @@ function formatApprovalRequest(payload) {
 function formatMessage(event, payload) {
   if (event === 'session-start') return formatSessionStart(payload);
   if (event === 'session-end') return formatSessionEnd(payload);
+  if (event === 'user-input') return formatUserInput(payload);
   if (event === 'approval-request') return formatApprovalRequest(payload);
   return formatTurnComplete(payload);
 }

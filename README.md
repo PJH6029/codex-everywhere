@@ -12,6 +12,7 @@ It also scans for Codex permission prompts (approval UI) and forwards them to Di
 - Injects Codex notify hook at runtime (`codex -c notify=[...]`)
 - Sends session start/end + turn response notifications to Discord bot channel
 - Two-way chat by replying to bot messages
+- Terminal-to-Discord sync: prompts typed directly in tmux are posted to Discord
 - Approval bridge: detects Codex permission prompts and asks user for `y` / `p` / `n` on Discord
 - Multi-channel mode: each Discord channel can own one Codex session
   - New channels that match provisioning filters auto-start a detached Codex session
@@ -104,6 +105,9 @@ export OMX_DISCORD_PROVISION_POLL_INTERVAL_MS="3000"
 export OMX_DISCORD_PROVISION_MAX_CHANNELS="40"
 ```
 
+`OMX_REPLY_INCLUDE_PREFIX="true"` is recommended.  
+It helps avoid echo loops by tagging Discord-injected prompts as `[reply:discord]`.
+
 Recommended restart after changing env/config:
 
 ```bash
@@ -117,6 +121,9 @@ You can also set the same values in `~/.codex/.omx-config.json`:
 {
   "notifications": {
     "enabled": true,
+    "events": {
+      "user-input": { "enabled": true }
+    },
     "discord-bot": {
       "enabled": true,
       "botToken": "<token>",

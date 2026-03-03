@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 
-import { appendJsonl, resolveFromCwd, safeString, todayFileName } from './utils.js';
+import { createHash } from 'crypto';
+import { INPUT_SYNC_STATE_PATH } from './constants.js';
+import {
+  appendJsonl,
+  readJson,
+  resolveFromCwd,
+  safeString,
+  todayFileName,
+  writeJsonAtomic,
+} from './utils.js';
 import { notifyEvent } from './notify.js';
 
 function parsePayloadArg() {
@@ -35,6 +44,56 @@ function readInputMessages(payload) {
   return [];
 }
 
+function normalizeUserInputForSync(text) {
+  return String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+}
+
+function isDiscordInjectedInput(text) {
+  return /^\[reply:discord\]\s*/i.test(String(text || '').trim());
+}
+
+function inputFingerprint(sessionId, input) {
+  return createHash('sha256')
+    .update(`${sessionId}\n${input}`)
+    .digest('hex')
+    .slice(0, 24);
+}
+
+async function shouldForwardUserInput(sessionId, input) {
+  const state = await readJson(INPUT_SYNC_STATE_PATH, { bySession: {} });
+  const bySession = state?.bySession && typeof state.bySession === 'object' ? state.bySession : {};
+
+  const fingerprint = inputFingerprint(sessionId, input);
+  const previous = String(bySession?.[sessionId]?.fingerprint || '');
+  if (previous === fingerprint) {
+    return false;
+  }
+
+  const nextBySession = {
+    ...bySession,
+    [sessionId]: {
+      fingerprint,
+      updatedAt: new Date().toISOString(),
+    },
+  };
+
+  const sessionIds = Object.keys(nextBySession);
+  if (sessionIds.length > 400) {
+    const sorted = sessionIds
+      .map((id) => ({ id, updatedAt: String(nextBySession[id]?.updatedAt || '') }))
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+    for (let idx = 0; idx < sorted.length - 400; idx += 1) {
+      delete nextBySession[sorted[idx].id];
+    }
+  }
+
+  await writeJsonAtomic(INPUT_SYNC_STATE_PATH, { bySession: nextBySession }).catch(() => {});
+  return true;
+}
+
 async function main() {
   const payload = parsePayloadArg();
   if (!payload) {
@@ -67,6 +126,7 @@ async function main() {
   const assistantMessage = readField(payload, ['last-assistant-message', 'last_assistant_message']);
   const question = readField(payload, ['question', 'ask-user-question']);
   const inputMessages = readInputMessages(payload);
+  const latestInput = normalizeUserInputForSync(inputMessages.slice(-1)[0] || '');
 
   const logPath = resolveFromCwd(projectPath, '.omx', 'logs', todayFileName('codex-everywhere-turns'));
 
@@ -77,9 +137,23 @@ async function main() {
     turn_id: readField(payload, ['turn_id', 'turn-id']),
     thread_id: readField(payload, ['thread_id', 'thread-id']),
     pane_id: paneId,
-    input_preview: inputMessages.slice(-1)[0]?.slice(0, 120) || '',
+    input_preview: latestInput.slice(0, 120),
     output_preview: assistantMessage.slice(0, 300),
   }).catch(() => {});
+
+  if (latestInput && !isDiscordInjectedInput(latestInput)) {
+    const shouldForward = await shouldForwardUserInput(sessionId, latestInput);
+    if (shouldForward) {
+      await notifyEvent('user-input', {
+        sessionId,
+        paneId,
+        tmuxSessionName,
+        projectPath,
+        channelId,
+        content: latestInput,
+      }).catch(() => {});
+    }
+  }
 
   if (assistantMessage) {
     await notifyEvent('turn-complete', {

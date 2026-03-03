@@ -204,6 +204,9 @@ export function loadAppConfig() {
       sessionStart: eventEnabled(events, 'session-start', true),
       sessionEnd: eventEnabled(events, 'session-end', true),
       turnComplete: eventEnabled(events, 'turn-complete', true),
+      userInput:
+        eventEnabled(events, 'user-input', true) &&
+        eventEnabled(events, 'input-message', true),
       approvalRequest:
         eventEnabled(events, 'approval-request', true) &&
         eventEnabled(events, 'ask-user-question', true),
