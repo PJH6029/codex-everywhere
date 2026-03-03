@@ -219,6 +219,23 @@ The configured `notifications.discord-bot.channelId` acts as the control channel
 - Creating a new matching text channel (same guild, optional prefix/category filters) auto-starts a new detached Codex session bound to that channel.
 - Any authorized user message in that channel is injected into its bound Codex session.
 - Reply-threading still works; channel routing is used as fallback when message references are absent.
+- Control channel is always polled so orchestration commands work even while other sessions are running.
+
+### Control-Channel Session Create Command
+
+In the control channel, send one of:
+
+- `!ce-new`
+- `!ce-new <name>`
+- `!ce-new --cwd ~/code/my-project`
+- `!ce-new <name> --cwd ~/code/my-project`
+
+Behavior:
+
+- Creates a new text channel in the same guild (and configured category if set).
+- Starts a new Codex session bound to that channel and directory.
+- Sends a channel mention + link in control channel so you can jump there quickly.
+- Discord does not allow bots to force client focus switching; click the mention/link to switch.
 
 ### Discord-side Termination Command
 
@@ -232,6 +249,7 @@ To terminate from Discord directly, send one of these exact messages in the sess
 
 The daemon safely terminates the bound Codex session (graceful `/exit` first, force fallback if needed).  
 If the channel is a provisioned per-session channel, the channel is deleted after termination.
+After channel deletion, codex-everywhere posts a handoff message in the control channel.
 
 If plain channel messages are injected as empty content, enable **Message Content Intent** for the bot in the Discord Developer Portal.  
 Replies/mentions may still work without it, but plain text command parsing is unreliable when that intent is disabled.

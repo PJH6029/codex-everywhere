@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { stat } from 'fs/promises';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
+import { basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import {
   DAEMON_LOCK_PATH,
@@ -13,6 +15,7 @@ import {
 import { loadAppConfig } from './config.js';
 import {
   addReaction,
+  createGuildTextChannel,
   deleteDiscordChannel,
   fetchChannelMessages,
   getDiscordChannel,
@@ -397,6 +400,11 @@ const TERMINATE_MESSAGE_COMMANDS = new Set([
   '!codex-terminate',
   '/exit',
 ]);
+const CREATE_SESSION_MESSAGE_COMMANDS = new Set([
+  '!ce-new',
+  '!ce-create',
+  '!codex-new',
+]);
 
 function parseApprovalDecision(text) {
   const lowered = String(text ?? '').trim().toLowerCase();
@@ -424,8 +432,116 @@ function parseLifecycleCommand(text) {
   return null;
 }
 
+function splitCommandTokens(text) {
+  const source = String(text || '');
+  const matches = source.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+  return matches
+    .map((token) => token.trim())
+    .filter(Boolean)
+    .map((token) => {
+      const quotedWithDouble = token.startsWith('"') && token.endsWith('"') && token.length >= 2;
+      const quotedWithSingle = token.startsWith('\'') && token.endsWith('\'') && token.length >= 2;
+      if (quotedWithDouble || quotedWithSingle) {
+        return token.slice(1, -1);
+      }
+      return token;
+    });
+}
+
+function parseCreateSessionCommand(text) {
+  const normalized = String(text || '')
+    .replace(/^(?:<@!?\d{17,20}>\s*)+/g, '')
+    .trim();
+  if (!normalized) return null;
+
+  const tokens = splitCommandTokens(normalized);
+  if (tokens.length === 0) return null;
+
+  const head = String(tokens[0] || '').toLowerCase();
+  if (!CREATE_SESSION_MESSAGE_COMMANDS.has(head)) {
+    return null;
+  }
+
+  let cwd = '';
+  let name = '';
+  const nameParts = [];
+
+  for (let idx = 1; idx < tokens.length; idx += 1) {
+    const token = tokens[idx];
+    if (token === '--cwd') {
+      cwd = String(tokens[idx + 1] || '').trim();
+      idx += 1;
+      continue;
+    }
+    if (token.startsWith('--cwd=')) {
+      cwd = token.slice('--cwd='.length).trim();
+      continue;
+    }
+    if (token === '--name') {
+      name = String(tokens[idx + 1] || '').trim();
+      idx += 1;
+      continue;
+    }
+    if (token.startsWith('--name=')) {
+      name = token.slice('--name='.length).trim();
+      continue;
+    }
+    if (token.startsWith('--')) {
+      return {
+        kind: 'create-session',
+        error: `unknown_option:${token}`,
+      };
+    }
+    nameParts.push(token);
+  }
+
+  if (!name && nameParts.length > 0) {
+    name = nameParts.join('-');
+  }
+
+  return {
+    kind: 'create-session',
+    cwd,
+    name,
+  };
+}
+
 function extractUserMessageContent(message) {
   return normalizeMultiline(String(message?.content || ''));
+}
+
+function resolveRequestedCwd(requestedCwd) {
+  const input = String(requestedCwd || '').trim();
+  if (!input) {
+    return process.cwd();
+  }
+  if (input.startsWith('~/')) {
+    const home = process.env.HOME || '';
+    if (home) {
+      return resolve(home, input.slice(2));
+    }
+  }
+  return resolve(process.cwd(), input);
+}
+
+async function validateCwdDirectory(path) {
+  try {
+    const fileStat = await stat(path);
+    return fileStat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function inferProvisionedChannelName(cwdPath, requestedName, config) {
+  const prefix = String(config?.discordProvisioning?.channelPrefix || 'codex-').trim().toLowerCase() || 'codex-';
+  const requested = String(requestedName || '').trim();
+  const base = requested || basename(cwdPath || process.cwd()) || 'session';
+  const slug = sanitizeName(base, 'session');
+  if (slug.startsWith(prefix)) {
+    return slug.slice(0, 95);
+  }
+  return `${prefix}${slug}`.slice(0, 95);
 }
 
 function detectApprovalPrompt(content) {
@@ -544,9 +660,9 @@ function activeSessionByChannelId(sessions, channelId) {
   return null;
 }
 
-async function launchProvisionedSession(channel, config) {
+async function launchProvisionedSession(channel, config, options = {}) {
   const channelId = String(channel.id || '');
-  const cwd = process.cwd();
+  const cwd = String(options.cwd || process.cwd());
   const sessionId = randomUUID();
   const project = sanitizeName(summarizeProject(cwd), 'project');
   const channelName = sanitizeName(String(channel.name || ''), 'channel');
@@ -562,7 +678,7 @@ async function launchProvisionedSession(channel, config) {
     channelId,
     projectPath: cwd,
     startedAt: nowIso(),
-    provisionedByChannel: true,
+    provisionedByChannel: options.provisionedByChannel !== false,
   });
 
   await notifyEvent('session-start', {
@@ -618,6 +734,23 @@ function shouldDeleteManagedSessionChannel(session, config) {
   if (!channelId || !/^\d{17,20}$/.test(channelId)) return false;
   if (channelId === String(config?.discordBot?.channelId || '').trim()) return false;
   return session?.provisionedByChannel === true;
+}
+
+async function sendControlChannelHandoff(config, session, trigger = 'terminate') {
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  const sessionChannelId = String(session?.channelId || '').trim();
+  if (!controlChannelId || controlChannelId === sessionChannelId) {
+    return;
+  }
+
+  await sendDiscordMessage(config.discordBot, {
+    channelId: controlChannelId,
+    content: [
+      `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`,
+      `Continue here in <#${controlChannelId}>.`,
+      'Create another session with `!ce-new [name] --cwd <path>`.',
+    ].join('\n'),
+  }).catch(() => {});
 }
 
 async function terminateSessionFromDiscordCommand(session, config, sourceMessageId = '') {
@@ -684,7 +817,133 @@ async function terminateSessionFromDiscordCommand(session, config, sourceMessage
     };
   }
 
+  await sendControlChannelHandoff(config, session, 'discord-command').catch(() => {});
+
   return { ok: true, forced, channelDeleted: true };
+}
+
+async function handleCreateSessionCommandInControlChannel(config, state, message, command, activeSessions) {
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  const sourceChannelId = String(message?.channel_id || '').trim();
+  if (!controlChannelId || sourceChannelId !== controlChannelId) {
+    return { handled: false, activeSessions };
+  }
+
+  const errorHint = String(command?.error || '').trim();
+  if (errorHint) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: [
+        `Cannot create session: \`${errorHint}\`.`,
+        'Usage: `!ce-new [name] --cwd <path>`',
+        'Example: `!ce-new bugfix --cwd ~/code/codex-everywhere`',
+      ].join('\n'),
+      replyToMessageId: message.id,
+    }).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const requestedCwd = resolveRequestedCwd(command?.cwd || '');
+  const cwdOk = await validateCwdDirectory(requestedCwd);
+  if (!cwdOk) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: `Cannot create session: directory not found or not a directory: \`${requestedCwd}\``,
+      replyToMessageId: message.id,
+    }).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const guildId = await ensureProvisionGuildId(config, state);
+  if (!guildId) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: 'Cannot create session channel: failed to resolve guild from control channel.',
+      replyToMessageId: message.id,
+    }).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const channelName = inferProvisionedChannelName(requestedCwd, command?.name || '', config);
+  const parentId = String(config?.discordProvisioning?.categoryId || '').trim();
+  const createResult = await createGuildTextChannel(config.discordBot, guildId, {
+    name: channelName,
+    parentId,
+    topic: `codex-everywhere cwd: ${requestedCwd}`,
+  }).catch((error) => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+
+  if (!createResult.success) {
+    let reason = createResult.error || 'discord_create_channel_failed';
+    if (reason.includes('missing_permissions')) {
+      reason = `${reason} (grant the bot 'Manage Channels' permission on this server/category)`;
+    }
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: `Cannot create session channel: ${reason}`,
+      replyToMessageId: message.id,
+    }).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const createdChannel = createResult.channel || {};
+  const createdChannelId = String(createdChannel.id || '').trim();
+  if (!createdChannelId) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: 'Channel create API returned no channel id.',
+      replyToMessageId: message.id,
+    }).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  if (activeSessionByChannelId(activeSessions, createdChannelId)) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: `Channel <#${createdChannelId}> already has an active session.`,
+      replyToMessageId: message.id,
+    }).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const sessionRecord = await launchProvisionedSession(createdChannel, config, {
+    cwd: requestedCwd,
+    provisionedByChannel: true,
+  }).catch(() => null);
+
+  if (!sessionRecord) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: `Created <#${createdChannelId}> but failed to start Codex session.`,
+      replyToMessageId: message.id,
+    }).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const knownIds = Array.isArray(state.provisionKnownChannelIds) ? state.provisionKnownChannelIds : [];
+  const knownSet = new Set(knownIds.filter((id) => typeof id === 'string'));
+  knownSet.add(createdChannelId);
+  state.provisionKnownChannelIds = Array.from(knownSet).slice(-2000);
+  state.lastProvisionScanAt = nowIso();
+
+  const channelLink = `https://discord.com/channels/${guildId}/${createdChannelId}`;
+  await sendDiscordMessage(config.discordBot, {
+    channelId: controlChannelId,
+    content: [
+      `Created <#${createdChannelId}> and started session \`${sessionRecord.sessionId}\`.`,
+      `Directory: \`${requestedCwd}\``,
+      `Open channel: ${channelLink}`,
+      'Discord cannot force-focus channel switching; click the channel mention/link above.',
+    ].join('\n'),
+    replyToMessageId: message.id,
+  }).catch(() => {});
+
+  return {
+    handled: true,
+    activeSessions: [...activeSessions, sessionRecord],
+  };
 }
 
 async function pollDiscordRepliesInChannel(config, state, limiter, channelId, activeSessions) {
@@ -730,6 +989,34 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
         replyToMessageId: message.id,
       }).catch(() => {});
       continue;
+    }
+
+    const isControlChannel = channelId === String(config.discordBot.channelId || '').trim();
+    if (isControlChannel) {
+      const createCommand = parseCreateSessionCommand(userContent);
+      if (createCommand?.kind === 'create-session') {
+        if (!limiter.canProceed()) {
+          state.errors += 1;
+          state.lastError = 'rate_limited';
+          continue;
+        }
+
+        processed.add(message.id);
+        await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+
+        const created = await handleCreateSessionCommandInControlChannel(
+          config,
+          state,
+          message,
+          createCommand,
+          activeSessions,
+        );
+        if (created?.handled) {
+          activeSessions = created.activeSessions;
+          state.messagesInjected += 1;
+          continue;
+        }
+      }
     }
 
     const lifecycle = parseLifecycleCommand(userContent);
@@ -1081,7 +1368,7 @@ async function runDaemonLoop() {
           if (channelId) managedChannelIds.add(channelId);
         }
 
-        if (managedChannelIds.size === 0 && config.discordBot.channelId) {
+        if (config.discordBot.channelId) {
           managedChannelIds.add(config.discordBot.channelId);
         }
 

@@ -278,6 +278,80 @@ export async function listGuildTextChannels(config, guildId) {
   return { success: false, error: lastError, channels: [] };
 }
 
+export async function createGuildTextChannel(config, guildId, options = {}) {
+  const resolvedGuildId = String(guildId || '').trim();
+  const tokens = tokenCandidates(config);
+  if (!resolvedGuildId || tokens.length === 0) {
+    return { success: false, error: 'discord_not_configured' };
+  }
+
+  const nameRaw = String(options.name || '').trim();
+  const name = nameRaw
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 95);
+  if (!name) {
+    return { success: false, error: 'invalid_channel_name' };
+  }
+
+  const parentId = String(options.parentId || '').trim();
+  const topic = String(options.topic || '').trim().slice(0, 1024);
+
+  const body = {
+    name,
+    type: 0,
+  };
+  if (parentId) body.parent_id = parentId;
+  if (topic) body.topic = topic;
+
+  const url = `https://discord.com/api/v10/guilds/${resolvedGuildId}/channels`;
+  let lastError = 'discord_create_channel_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: authHeaders(tokens[idx]),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        let apiCode = '';
+        let apiMessage = '';
+        try {
+          const payload = await response.json();
+          apiCode = payload && payload.code !== undefined ? String(payload.code) : '';
+          apiMessage = payload && payload.message !== undefined ? String(payload.message) : '';
+        } catch {
+          // ignore parse failure
+        }
+
+        const codePart = normalizeApiErrorFragment(apiCode);
+        const messagePart = normalizeApiErrorFragment(apiMessage);
+        const extras = [codePart, messagePart].filter(Boolean).join('_');
+        lastError = extras
+          ? `discord_http_${response.status}_${extras}`
+          : `discord_http_${response.status}`;
+
+        if ((response.status === 401 || response.status === 403) && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError };
+      }
+
+      const channel = await response.json().catch(() => null);
+      return { success: true, channel, usedFallbackToken: idx > 0 };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_create_channel_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError };
+    }
+  }
+
+  return { success: false, error: lastError };
+}
+
 export async function deleteDiscordChannel(config, channelId, reason = '') {
   const resolvedChannelId = resolveChannelId(config, { channelId });
   const tokens = tokenCandidates(config);

@@ -381,6 +381,19 @@ async function deleteManagedChannelForTerminatedSession(session, trigger = 'cli'
     return { deleted: false, reason };
   }
 
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  const sessionChannelId = String(session?.channelId || '').trim();
+  if (controlChannelId && controlChannelId !== sessionChannelId) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content: [
+        `Session \`${session.sessionId}\` finished via ${trigger}.`,
+        `Continue here in <#${controlChannelId}>.`,
+        'Create another session with `!ce-new [name] --cwd <path>`.',
+      ].join('\n'),
+    }).catch(() => {});
+  }
+
   return { deleted: true, reason: '' };
 }
 
