@@ -6,6 +6,40 @@ Minimal OMX-like Codex add-on focused on messenger interaction.
 
 It also scans for Codex permission prompts (approval UI) and forwards them to Discord so user decisions can be sent back to Codex.
 
+## Quickstart
+
+1. Clone and enter repo:
+
+```bash
+git clone https://github.com/PJH6029/codex-everywhere.git
+cd codex-everywhere
+```
+
+2. Install CLI locally:
+
+```bash
+npm link
+```
+
+3. Start Codex Everywhere:
+
+```bash
+codex-everywhere
+```
+
+4. In Codex terminal, grant full access for setup:
+   - Run `/permissions` and allow full access.
+
+5. Activate setup skill:
+   - Run `$setup-discord`
+
+6. Complete required manual auth steps when prompted:
+   - Solve CAPTCHA if Discord shows it.
+   - Re-authenticate if Discord asks again during bot token generation.
+   - Send one normal message in control channel for auto user recognition.
+
+After setup, type `!ce-new` in control channel.
+
 ## Features
 
 - Starts Codex in tmux via `codex-everywhere`
