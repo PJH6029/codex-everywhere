@@ -201,6 +201,9 @@ To terminate from Discord directly, send one of these exact messages in the sess
 The daemon safely terminates the bound Codex session (graceful `/exit` first, force fallback if needed).  
 If the channel is a provisioned per-session channel, the channel is deleted after termination.
 
+If plain channel messages are injected as empty content, enable **Message Content Intent** for the bot in the Discord Developer Portal.  
+Replies/mentions may still work without it, but plain text command parsing is unreliable when that intent is disabled.
+
 ## Logs and State
 
 - Project logs: `<project>/.omx/logs/codex-everywhere-turns-YYYY-MM-DD.jsonl`

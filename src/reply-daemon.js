@@ -413,12 +413,19 @@ function parseApprovalDecision(text) {
 }
 
 function parseLifecycleCommand(text) {
-  const normalized = String(text || '').trim().toLowerCase();
+  const normalized = String(text || '')
+    .replace(/^(?:<@!?\d{17,20}>\s*)+/g, '')
+    .trim()
+    .toLowerCase();
   if (!normalized) return null;
   if (TERMINATE_MESSAGE_COMMANDS.has(normalized)) {
     return { kind: 'terminate-session' };
   }
   return null;
+}
+
+function extractUserMessageContent(message) {
+  return normalizeMultiline(String(message?.content || ''));
 }
 
 function detectApprovalPrompt(content) {
@@ -708,7 +715,20 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
       continue;
     }
 
-    const lifecycle = parseLifecycleCommand(message.content || '');
+    const userContent = extractUserMessageContent(message);
+    if (!userContent) {
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content:
+          'Received empty message content, so nothing was injected. If plain channel messages keep coming through empty, enable **Message Content Intent** for your Discord bot or mention/reply to the bot.',
+        replyToMessageId: message.id,
+      }).catch(() => {});
+      continue;
+    }
+
+    const lifecycle = parseLifecycleCommand(userContent);
     if (lifecycle?.kind === 'terminate-session') {
       if (!limiter.canProceed()) {
         state.errors += 1;
@@ -795,7 +815,7 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
     let injectResult = { ok: false, reason: 'unknown' };
 
     if (mapping.kind === 'approval') {
-      injectResult = await injectApprovalDecision(mapping, message.content || '');
+      injectResult = await injectApprovalDecision(mapping, userContent);
       if (!injectResult.ok && injectResult.reason === 'invalid_decision') {
         await sendDiscordMessage(config.discordBot, {
           channelId,
@@ -816,7 +836,7 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
         }
       }
     } else {
-      const ok = await injectReplyToPane(mapping, normalizeMultiline(message.content || ''), config);
+      const ok = await injectReplyToPane(mapping, userContent, config);
       injectResult = ok ? { ok: true } : { ok: false, reason: 'tmux_injection_failed' };
     }
 
