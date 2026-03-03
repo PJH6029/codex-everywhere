@@ -35,6 +35,16 @@ function resolveChannelId(config, options = {}) {
   return String(config.channelId || '').trim();
 }
 
+function normalizeApiErrorFragment(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+}
+
 export async function sendDiscordMessage(config, options) {
   const { mention } = config;
   const channelId = resolveChannelId(config, options);
@@ -296,8 +306,24 @@ export async function deleteDiscordChannel(config, channelId, reason = '') {
       });
 
       if (!response.ok) {
-        lastError = `discord_http_${response.status}`;
-        if (response.status === 401 && idx < tokens.length - 1) continue;
+        let apiCode = '';
+        let apiMessage = '';
+        try {
+          const body = await response.json();
+          apiCode = body && body.code !== undefined ? String(body.code) : '';
+          apiMessage = body && body.message !== undefined ? String(body.message) : '';
+        } catch {
+          // Ignore parse errors and keep generic status.
+        }
+
+        const codePart = normalizeApiErrorFragment(apiCode);
+        const messagePart = normalizeApiErrorFragment(apiMessage);
+        const extras = [codePart, messagePart].filter(Boolean).join('_');
+        lastError = extras
+          ? `discord_http_${response.status}_${extras}`
+          : `discord_http_${response.status}`;
+
+        if ((response.status === 401 || response.status === 403) && idx < tokens.length - 1) continue;
         return { success: false, error: lastError };
       }
 

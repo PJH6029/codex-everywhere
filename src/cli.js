@@ -373,7 +373,12 @@ async function deleteManagedChannelForTerminatedSession(session, trigger = 'cli'
   }));
 
   if (!result.success) {
-    return { deleted: false, reason: result.error || 'discord_delete_channel_failed' };
+    let reason = result.error || 'discord_delete_channel_failed';
+    if (reason.includes('missing_permissions')) {
+      reason =
+        `${reason} (grant the bot 'Manage Channels' permission on this channel/category)`;
+    }
+    return { deleted: false, reason };
   }
 
   return { deleted: true, reason: '' };

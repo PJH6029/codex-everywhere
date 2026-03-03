@@ -672,11 +672,15 @@ async function terminateSessionFromDiscordCommand(session, config, sourceMessage
   }));
 
   if (!deleteResult.success) {
+    let error = deleteResult.error || 'discord_delete_channel_failed';
+    if (error.includes('missing_permissions')) {
+      error = `${error} (grant the bot 'Manage Channels' permission on this channel/category)`;
+    }
     return {
       ok: true,
       forced,
       channelDeleted: false,
-      channelDeleteError: deleteResult.error || 'discord_delete_channel_failed',
+      channelDeleteError: error,
     };
   }
 
