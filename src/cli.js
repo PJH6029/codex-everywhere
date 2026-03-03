@@ -8,6 +8,7 @@ import { loadAppConfig } from './config.js';
 import { deleteDiscordChannel, sendDiscordMessage } from './discord.js';
 import { notifyEvent } from './notify.js';
 import { startDaemon, stopDaemon, daemonStatus } from './reply-daemon.js';
+import { runDiscordSetupCommand } from './setup-discord.js';
 import {
   listActiveSessions,
   pruneActiveSessions,
@@ -34,6 +35,7 @@ const HELP = `codex-everywhere
 
 Usage:
   codex-everywhere [codex args...]
+  codex-everywhere setup discord [options]
   codex-everywhere daemon <start|stop|status>
   codex-everywhere sessions [list] [--all]
   codex-everywhere sessions attach [selector] [--pane] [--lines <n>] [--all]
@@ -46,6 +48,7 @@ Behavior:
   - Forwards Codex approval prompts through Discord and injects decisions
   - Lists, opens, and terminates tmux sessions created from Discord channels
   - Deletes per-session Discord channels when those managed sessions are terminated
+  - Supports one-shot Discord config setup (\`setup discord\`)
 `;
 
 function codexInstalled() {
@@ -610,6 +613,15 @@ async function handleDaemonCommand(command) {
   throw new Error('unknown daemon command. Use start|stop|status');
 }
 
+async function handleSetupCommand(args) {
+  const sub = String(args[0] || '').trim().toLowerCase();
+  if (!sub || sub === 'discord') {
+    await runDiscordSetupCommand(args.slice(sub ? 1 : 0));
+    return;
+  }
+  throw new Error('unknown setup command. Use `setup discord`');
+}
+
 export async function main(argv = process.argv.slice(2)) {
   if (argv.length === 0) {
     await runSession([]);
@@ -624,6 +636,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (first === 'daemon') {
     await handleDaemonCommand(argv[1] || 'status');
+    return;
+  }
+
+  if (first === 'setup') {
+    await handleSetupCommand(argv.slice(1));
     return;
   }
 

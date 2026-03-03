@@ -46,6 +46,19 @@ Pass any Codex args through:
 codex-everywhere -m gpt-5.3-codex --full-auto
 ```
 
+## Fast Setup (Codex Skill)
+
+This repo includes a local setup skill:
+
+- `.agents/skills/setup-discord/SKILL.md`
+
+Recommended flow:
+
+1. `npm link`
+2. `codex-everywhere`
+3. Run `/setup-discord` in Codex (or tell Codex to use local `setup-discord` skill)
+4. In Discord control channel, type `!ce-new`
+
 ## Discord Configuration
 
 ### Discord Developer Portal + Server Setup (Required)
@@ -103,6 +116,27 @@ export OMX_DISCORD_PROVISION_PREFIX="codex-"
 export OMX_DISCORD_PROVISION_CATEGORY_ID=""
 export OMX_DISCORD_PROVISION_POLL_INTERVAL_MS="3000"
 export OMX_DISCORD_PROVISION_MAX_CHANNELS="40"
+```
+
+### One-shot setup command (recommended)
+
+Instead of manual env/config editing:
+
+```bash
+codex-everywhere setup discord \
+  --bot-token "<DISCORD_BOT_TOKEN>" \
+  --control-channel-id "<CONTROL_CHANNEL_ID>" \
+  --authorized-user-id auto
+```
+
+`--authorized-user-id auto` discovers the latest non-bot author in control channel.
+If auto-discovery fails, pass explicit user id:
+
+```bash
+codex-everywhere setup discord \
+  --bot-token "<DISCORD_BOT_TOKEN>" \
+  --control-channel-id "<CONTROL_CHANNEL_ID>" \
+  --authorized-user-id "<YOUR_USER_ID>"
 ```
 
 `OMX_REPLY_INCLUDE_PREFIX="true"` is recommended.  

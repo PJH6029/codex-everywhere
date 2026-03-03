@@ -1,0 +1,6 @@
+## Local Skills
+
+- `setup-discord` (file: `.agents/skills/setup-discord/SKILL.md`)
+  - Use when the user asks to bootstrap Discord app/bot/server setup for `codex-everywhere` with minimal manual configuration.
+  - Prefer the CLI one-shot command:
+    - `codex-everywhere setup discord --bot-token "<TOKEN>" --control-channel-id "<CHANNEL_ID>" --authorized-user-id auto`
