@@ -24,6 +24,7 @@ It also scans for Codex permission prompts (approval UI) and forwards them to Di
 - `tmux`
 - `codex` CLI (`npm i -g @openai/codex`)
 - Discord bot token + channel ID
+- Discord bot permissions in your server (see Discord setup below)
 
 ## Install
 
@@ -45,6 +46,30 @@ codex-everywhere -m gpt-5.3-codex --full-auto
 ```
 
 ## Discord Configuration
+
+### Discord Developer Portal + Server Setup (Required)
+
+1. Create or open your Discord application and bot in the Developer Portal.
+2. In `Bot` settings:
+   - Enable **Message Content Intent**.
+3. In `OAuth2 > URL Generator`:
+   - Scopes: `bot`
+   - Bot permissions (minimum):
+     - `View Channels`
+     - `Read Message History`
+     - `Send Messages`
+     - `Add Reactions`
+   - Additional permission for channel auto-cleanup on terminate:
+     - `Manage Channels`
+4. Re-invite the bot with updated permissions if needed.
+5. In Discord server/channel/category permission overrides:
+   - Make sure the bot role is not denied the permissions above.
+   - If using category-based channel provisioning, set permissions on that category too.
+
+Without **Message Content Intent**, plain channel messages may appear empty to the bot.
+Without **Manage Channels**, session termination works but channel deletion fails with `discord_http_403`.
+
+### Runtime Config (Env Vars)
 
 Use OMX-compatible env vars:
 
@@ -77,6 +102,13 @@ export OMX_DISCORD_PROVISION_PREFIX="codex-"
 export OMX_DISCORD_PROVISION_CATEGORY_ID=""
 export OMX_DISCORD_PROVISION_POLL_INTERVAL_MS="3000"
 export OMX_DISCORD_PROVISION_MAX_CHANNELS="40"
+```
+
+Recommended restart after changing env/config:
+
+```bash
+codex-everywhere daemon stop
+codex-everywhere daemon start
 ```
 
 You can also set the same values in `~/.codex/.omx-config.json`:
@@ -196,13 +228,26 @@ To terminate from Discord directly, send one of these exact messages in the sess
 - `!ce-terminate`
 - `!codex-exit`
 - `!codex-terminate`
-- `/exit` (supported as an alias, but slash-style inputs can conflict with Discord app commands)
+- `/exit` (alias; may conflict with Discord slash-command UX, so `!ce-exit` is recommended)
 
 The daemon safely terminates the bound Codex session (graceful `/exit` first, force fallback if needed).  
 If the channel is a provisioned per-session channel, the channel is deleted after termination.
 
 If plain channel messages are injected as empty content, enable **Message Content Intent** for the bot in the Discord Developer Portal.  
 Replies/mentions may still work without it, but plain text command parsing is unreliable when that intent is disabled.
+
+## Discord Troubleshooting
+
+- `discord_http_401`:
+  - Bot token is invalid/expired, or wrong token is loaded.
+- `discord_http_403_*missing_permissions*` on channel delete:
+  - Grant bot role `Manage Channels` in server and channel/category overrides.
+- Plain channel messages are treated as empty:
+  - Enable **Message Content Intent**.
+  - Restart daemon after intent/permission updates.
+- `!ce-exit` did nothing:
+  - Ensure message came from a user in `OMX_REPLY_DISCORD_USER_IDS`.
+  - Use exact command text (or reply/mention with the command).
 
 ## Logs and State
 
