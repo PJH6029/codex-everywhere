@@ -211,6 +211,20 @@ codex-everywhere daemon stop
 codex-everywhere daemon start
 ```
 
+Optional: enable verbose Discord diagnostics (session id, tmux session/pane, injection target):
+
+```bash
+codex-everywhere daemon stop
+codex-everywhere daemon start --debug
+```
+
+Return to minimal user-facing messages:
+
+```bash
+codex-everywhere daemon stop
+codex-everywhere daemon start --no-debug
+```
+
 You can also set the same values in `~/.codex/.omx-config.json`:
 
 ```json
@@ -252,6 +266,8 @@ You can also set the same values in `~/.codex/.omx-config.json`:
 ```bash
 codex-everywhere daemon status
 codex-everywhere daemon start
+codex-everywhere daemon start --debug
+codex-everywhere daemon start --no-debug
 codex-everywhere daemon stop
 ```
 

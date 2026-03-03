@@ -44,6 +44,7 @@ import {
   ensureDir,
   normalizeMultiline,
   nowIso,
+  parseBoolean,
   shellEscape,
   sleep,
   summarizeProject,
@@ -69,6 +70,7 @@ const DEFAULT_STATE = {
   errors: 0,
   lastError: '',
   lastApprovalBySession: {},
+  debug: false,
 };
 
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -264,7 +266,26 @@ export async function daemonStatus() {
   };
 }
 
-export async function startDaemon() {
+function resolveDaemonDebugValue(options = {}, fallback = false) {
+  if (typeof options?.debug === 'boolean') {
+    return options.debug;
+  }
+
+  if (typeof process.env.OMX_CE_DEBUG === 'string') {
+    return parseBoolean(process.env.OMX_CE_DEBUG, fallback);
+  }
+
+  if (typeof process.env.CODEX_EVERYWHERE_DEBUG === 'string') {
+    return parseBoolean(process.env.CODEX_EVERYWHERE_DEBUG, fallback);
+  }
+
+  return fallback;
+}
+
+export async function startDaemon(options = {}) {
+  const priorState = await readJson(DAEMON_STATE_PATH, DEFAULT_STATE);
+  const debug = resolveDaemonDebugValue(options, priorState?.debug === true);
+
   const conflicts = listConflictingReplyListenerPids();
   if (conflicts.length > 0) {
     return {
@@ -278,7 +299,17 @@ export async function startDaemon() {
   const runningPids = listReplyDaemonPids().filter((candidate) => candidate !== process.pid && isProcessAlive(candidate));
   if (runningPids.length > 0) {
     writePid(runningPids[0]);
-    return { success: true, message: `reply daemon already running (pid ${runningPids[0]})` };
+    if (typeof options?.debug === 'boolean') {
+      await writeJsonAtomic(DAEMON_STATE_PATH, {
+        ...DEFAULT_STATE,
+        ...priorState,
+        isRunning: true,
+        pid: runningPids[0],
+        startedAt: priorState?.startedAt || nowIso(),
+        debug,
+      });
+    }
+    return { success: true, message: `reply daemon already running (pid ${runningPids[0]}, debug ${debug ? 'on' : 'off'})` };
   }
 
   if (!isTmuxAvailable()) {
@@ -294,6 +325,7 @@ export async function startDaemon() {
     env: {
       ...process.env,
       CODEX_EVERYWHERE_DAEMON: '1',
+      CODEX_EVERYWHERE_DEBUG: debug ? '1' : '0',
     },
   });
 
@@ -307,12 +339,14 @@ export async function startDaemon() {
 
   await writeJsonAtomic(DAEMON_STATE_PATH, {
     ...DEFAULT_STATE,
+    ...priorState,
     isRunning: true,
     pid: child.pid,
     startedAt: nowIso(),
+    debug,
   });
 
-  return { success: true, message: `reply daemon started (pid ${child.pid})` };
+  return { success: true, message: `reply daemon started (pid ${child.pid}, debug ${debug ? 'on' : 'off'})` };
 }
 
 export async function stopDaemon() {
@@ -746,7 +780,9 @@ async function sendControlChannelHandoff(config, session, trigger = 'terminate')
   await sendDiscordMessage(config.discordBot, {
     channelId: controlChannelId,
     content: [
-      `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`,
+      config?.debug === true
+        ? `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`
+        : `A Codex session finished via ${trigger}.`,
       `Continue here in <#${controlChannelId}>.`,
       'Create another session with `!ce-new [name] --cwd <path>`.',
     ].join('\n'),
@@ -789,7 +825,10 @@ async function terminateSessionFromDiscordCommand(session, config, sourceMessage
 
   await sendDiscordMessage(config.discordBot, {
     channelId,
-    content: `Session \`${session.sessionId}\` terminated by Discord command. This channel will now be deleted.`,
+    content:
+      config?.debug === true
+        ? `Session \`${session.sessionId}\` terminated by Discord command. This channel will now be deleted.`
+        : 'Session terminated by Discord command. This channel will now be deleted.',
     replyToMessageId: sourceMessageId || undefined,
   }).catch(() => {});
 
@@ -932,10 +971,11 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
   await sendDiscordMessage(config.discordBot, {
     channelId: controlChannelId,
     content: [
-      `Created <#${createdChannelId}> and started session \`${sessionRecord.sessionId}\`.`,
+      config?.debug === true
+        ? `Created <#${createdChannelId}> and started session \`${sessionRecord.sessionId}\`.`
+        : `Created <#${createdChannelId}> and started a new Codex session.`,
       `Directory: \`${requestedCwd}\``,
       `Open channel: ${channelLink}`,
-      'Discord cannot force-focus channel switching; click the channel mention/link above.',
     ].join('\n'),
     replyToMessageId: message.id,
   }).catch(() => {});
@@ -1042,7 +1082,10 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
 
       await sendDiscordMessage(config.discordBot, {
         channelId,
-        content: `Termination requested for session \`${session.sessionId}\`.`,
+        content:
+          config?.debug === true
+            ? `Termination requested for session \`${session.sessionId}\`.`
+            : 'Termination requested. Closing this Codex session.',
         replyToMessageId: message.id,
       }).catch(() => {});
 
@@ -1052,7 +1095,10 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
         state.lastError = terminated.error || 'session_terminate_failed';
         await sendDiscordMessage(config.discordBot, {
           channelId,
-          content: `Failed to terminate session \`${session.sessionId}\`: ${terminated.error || 'unknown error'}.`,
+          content:
+            config?.debug === true
+              ? `Failed to terminate session \`${session.sessionId}\`: ${terminated.error || 'unknown error'}.`
+              : `Failed to terminate this session: ${terminated.error || 'unknown error'}.`,
           replyToMessageId: message.id,
         }).catch(() => {});
         continue;
@@ -1068,7 +1114,10 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
           : '';
         await sendDiscordMessage(config.discordBot, {
           channelId,
-          content: `Session \`${session.sessionId}\` ${mode}.${suffix}`,
+          content:
+            config?.debug === true
+              ? `Session \`${session.sessionId}\` ${mode}.${suffix}`
+              : `Session ${mode}.${suffix}`,
           replyToMessageId: message.id,
         }).catch(() => {});
       }
@@ -1135,15 +1184,17 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
       state.messagesInjected += 1;
       processed.add(message.id);
       await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
-      const target = mapping.tmuxSessionName
-        ? `${mapping.tmuxSessionName} ${mapping.tmuxPaneId}`
-        : mapping.tmuxPaneId;
-      const action = mapping.kind === 'approval' ? 'Decision injected' : 'Message injected';
-      await sendDiscordMessage(config.discordBot, {
-        channelId,
-        content: `${action} into tmux target \`${target}\`.`,
-        replyToMessageId: message.id,
-      }).catch(() => {});
+      if (config?.debug === true) {
+        const target = mapping.tmuxSessionName
+          ? `${mapping.tmuxSessionName} ${mapping.tmuxPaneId}`
+          : mapping.tmuxPaneId;
+        const action = mapping.kind === 'approval' ? 'Decision injected' : 'Message injected';
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: `${action} into tmux target \`${target}\`.`,
+          replyToMessageId: message.id,
+        }).catch(() => {});
+      }
     } else {
       state.errors += 1;
       state.lastError = injectResult.reason;
@@ -1316,6 +1367,7 @@ async function runDaemonLoop() {
     ...DEFAULT_STATE,
     ...(await readJson(DAEMON_STATE_PATH, DEFAULT_STATE)),
   };
+  state.debug = resolveDaemonDebugValue({}, state.debug === true);
 
   state.isRunning = true;
   state.pid = process.pid;
@@ -1333,6 +1385,11 @@ async function runDaemonLoop() {
   process.on('SIGINT', shutdown);
 
   while (!stopRequested) {
+    const persistedState = await readJson(DAEMON_STATE_PATH, null);
+    if (persistedState && typeof persistedState?.debug === 'boolean') {
+      state.debug = persistedState.debug;
+    }
+
     const config = loadAppConfig();
 
     state.lastPollAt = nowIso();
@@ -1411,6 +1468,16 @@ async function runDaemonLoop() {
 
 async function main() {
   const command = process.argv[2] || 'status';
+  const flag = String(process.argv[3] || '').trim();
+  const debugOption = flag === '--debug'
+    ? true
+    : flag === '--no-debug'
+      ? false
+      : undefined;
+  if (flag && typeof debugOption === 'undefined') {
+    console.error('Usage: reply-daemon.js start [--debug|--no-debug]');
+    process.exit(1);
+  }
 
   if (command === 'run') {
     await runDaemonLoop();
@@ -1418,7 +1485,7 @@ async function main() {
   }
 
   if (command === 'start') {
-    const result = await startDaemon();
+    const result = await startDaemon({ debug: debugOption });
     console.log(result.message);
     process.exit(result.success ? 0 : 1);
   }

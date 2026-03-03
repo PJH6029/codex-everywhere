@@ -15,37 +15,35 @@ function eventEnabled(config, event) {
   return true;
 }
 
-function formatSessionStart(payload) {
+function formatSessionStart(payload, debug = false) {
   const project = summarizeProject(payload.projectPath || process.cwd());
-  const paneLine = payload.paneId ? `Pane: \`${payload.paneId}\`` : null;
+  const paneLine = debug && payload.paneId ? `Pane: \`${payload.paneId}\`` : null;
   return [
     '# Session Started',
     '',
     `Project: \`${project}\``,
-    `Session: \`${payload.sessionId}\``,
-    payload.tmuxSessionName ? `tmux: \`${payload.tmuxSessionName}\`` : null,
+    debug ? `Session: \`${payload.sessionId}\`` : null,
+    debug && payload.tmuxSessionName ? `tmux: \`${payload.tmuxSessionName}\`` : null,
     paneLine,
-    '',
-    'Reply to this message to send input to the Codex session.',
   ]
     .filter(Boolean)
     .join('\n');
 }
 
-function formatSessionEnd(payload) {
+function formatSessionEnd(payload, debug = false) {
   const project = summarizeProject(payload.projectPath || process.cwd());
   return [
     '# Session Ended',
     '',
     `Project: \`${project}\``,
-    `Session: \`${payload.sessionId}\``,
+    debug ? `Session: \`${payload.sessionId}\`` : null,
     payload.reason ? `Reason: ${payload.reason}` : null,
   ]
     .filter(Boolean)
     .join('\n');
 }
 
-function formatTurnComplete(payload) {
+function formatTurnComplete(payload, debug = false) {
   const content = truncate(payload.content || '', 1600);
   const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
 
@@ -54,12 +52,14 @@ function formatTurnComplete(payload) {
     '',
     content || '(empty response)',
     '',
-    payload.sessionId ? `Session: \`${payload.sessionId}\`` : null,
-    target ? `Target: \`${target}\`` : null,
-  ].join('\n');
+    debug && payload.sessionId ? `Session: \`${payload.sessionId}\`` : null,
+    debug && target ? `Target: \`${target}\`` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
-function formatUserInput(payload) {
+function formatUserInput(payload, debug = false) {
   const content = truncate(payload.content || '', 1600);
   const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
 
@@ -68,8 +68,8 @@ function formatUserInput(payload) {
     '',
     content ? `\`\`\`text\n${content}\n\`\`\`` : '(empty input)',
     '',
-    payload.sessionId ? `Session: \`${payload.sessionId}\`` : null,
-    target ? `Target: \`${target}\`` : null,
+    debug && payload.sessionId ? `Session: \`${payload.sessionId}\`` : null,
+    debug && target ? `Target: \`${target}\`` : null,
   ]
     .filter(Boolean)
     .join('\n');
@@ -89,12 +89,12 @@ function formatApprovalRequest(payload) {
   ].join('\n');
 }
 
-function formatMessage(event, payload) {
-  if (event === 'session-start') return formatSessionStart(payload);
-  if (event === 'session-end') return formatSessionEnd(payload);
-  if (event === 'user-input') return formatUserInput(payload);
+function formatMessage(event, payload, debug = false) {
+  if (event === 'session-start') return formatSessionStart(payload, debug);
+  if (event === 'session-end') return formatSessionEnd(payload, debug);
+  if (event === 'user-input') return formatUserInput(payload, debug);
   if (event === 'approval-request') return formatApprovalRequest(payload);
-  return formatTurnComplete(payload);
+  return formatTurnComplete(payload, debug);
 }
 
 export async function notifyEvent(event, payload) {
@@ -103,7 +103,7 @@ export async function notifyEvent(event, payload) {
     return { success: false, error: 'event_disabled' };
   }
 
-  const message = payload.message || formatMessage(event, payload);
+  const message = payload.message || formatMessage(event, payload, config.debug === true);
   const result = await sendDiscordMessage(config.discordBot, {
     content: message,
     replyToMessageId: payload.replyToMessageId,

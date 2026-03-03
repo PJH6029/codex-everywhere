@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'fs';
-import { OMX_CONFIG_PATH } from './constants.js';
+import { DAEMON_STATE_PATH, OMX_CONFIG_PATH } from './constants.js';
 import { clampInt, parseBoolean, parseDiscordIds } from './utils.js';
 
 function readRawConfig() {
@@ -16,6 +16,40 @@ function readNotificationsBlock(raw) {
   const notifications = raw.notifications;
   if (!notifications || typeof notifications !== 'object') return null;
   return notifications;
+}
+
+function parseOptionalBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const lowered = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(lowered)) return true;
+  if (['0', 'false', 'no', 'off'].includes(lowered)) return false;
+  return undefined;
+}
+
+function readDaemonDebugFlag() {
+  if (!existsSync(DAEMON_STATE_PATH)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(DAEMON_STATE_PATH, 'utf-8'));
+    return typeof parsed?.debug === 'boolean' ? parsed.debug : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveDebugMode(notifications) {
+  const envDebug = parseOptionalBoolean(
+    process.env.OMX_CE_DEBUG ?? process.env.CODEX_EVERYWHERE_DEBUG,
+  );
+  if (typeof envDebug === 'boolean') return envDebug;
+
+  const fileDebug = parseOptionalBoolean(notifications?.debug);
+  if (typeof fileDebug === 'boolean') return fileDebug;
+
+  const daemonDebug = readDaemonDebugFlag();
+  if (typeof daemonDebug === 'boolean') return daemonDebug;
+
+  return false;
 }
 
 function validateMention(raw) {
@@ -194,9 +228,11 @@ export function loadAppConfig() {
   const discordProvisioning = resolveDiscordProvisioningConfig(notifications, discordBot.enabled);
   const reply = resolveReplyConfig(notifications, discordBot.enabled);
   const events = notifications?.events || {};
+  const debug = resolveDebugMode(notifications);
 
   return {
     notificationsEnabled,
+    debug,
     discordBot,
     discordProvisioning,
     reply,
