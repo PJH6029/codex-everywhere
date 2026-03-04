@@ -443,6 +443,13 @@ const META_MESSAGE_COMMANDS = new Set([
   '!ce-meta',
   '!codex-meta',
 ]);
+const POLICY_MESSAGE_COMMANDS = new Set([
+  '!ce-perm',
+  '!ce-permission',
+  '!ce-policy',
+  '!codex-perm',
+  '!codex-policy',
+]);
 const CREATE_SESSION_MESSAGE_COMMANDS = new Set([
   '!ce-new',
   '!ce-create',
@@ -483,6 +490,32 @@ function normalizeCreateSessionApproval(value) {
 function normalizeCreateSessionSandbox(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return CREATE_SESSION_SANDBOX_MODES.has(normalized) ? normalized : '';
+}
+
+function buildLaunchPolicySpec(approvalPolicy, sandboxMode, fullAuto) {
+  let nextApprovalPolicy = String(approvalPolicy || '').trim().toLowerCase();
+  let nextSandboxMode = String(sandboxMode || '').trim().toLowerCase();
+  const nextFullAuto = fullAuto === true;
+
+  if (nextFullAuto) {
+    if (!nextApprovalPolicy) nextApprovalPolicy = 'on-request';
+    if (!nextSandboxMode) nextSandboxMode = 'workspace-write';
+  }
+
+  const codexArgs = [];
+  if (nextApprovalPolicy) {
+    codexArgs.push('--ask-for-approval', nextApprovalPolicy);
+  }
+  if (nextSandboxMode) {
+    codexArgs.push('--sandbox', nextSandboxMode);
+  }
+
+  return {
+    approvalPolicy: nextApprovalPolicy,
+    sandboxMode: nextSandboxMode,
+    fullAuto: nextFullAuto,
+    codexArgs,
+  };
 }
 
 function markConversationInterruptedSuppressed(state, sessionId, ttlMs = DENY_INTERRUPTED_SUPPRESS_MS) {
@@ -531,6 +564,170 @@ function parseLifecycleCommand(text) {
     return { kind: 'session-meta' };
   }
   return null;
+}
+
+function parsePolicyCommand(text) {
+  const normalized = String(text || '')
+    .replace(/^(?:<@!?\d{17,20}>\s*)+/g, '')
+    .trim();
+  if (!normalized) return null;
+
+  const tokens = splitCommandTokens(normalized);
+  if (tokens.length === 0) return null;
+
+  const head = String(tokens[0] || '').toLowerCase();
+  if (!POLICY_MESSAGE_COMMANDS.has(head)) {
+    return null;
+  }
+
+  let approvalPolicy = '';
+  let sandboxMode = '';
+  let fullAuto = false;
+  let resetDefault = false;
+
+  for (let idx = 1; idx < tokens.length; idx += 1) {
+    const token = tokens[idx];
+    if (token === '--approval' || token === '--ask-for-approval' || token === '-a') {
+      const raw = String(tokens[idx + 1] || '').trim();
+      if (!raw || raw.startsWith('-')) {
+        return {
+          kind: 'set-launch-policy',
+          error: `missing_option_value:${token}`,
+        };
+      }
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'set-launch-policy',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      idx += 1;
+      continue;
+    }
+    if (token.startsWith('--approval=')) {
+      const raw = token.slice('--approval='.length).trim();
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'set-launch-policy',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      continue;
+    }
+    if (token.startsWith('--ask-for-approval=')) {
+      const raw = token.slice('--ask-for-approval='.length).trim();
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'set-launch-policy',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      continue;
+    }
+    if (token.startsWith('-a=')) {
+      const raw = token.slice('-a='.length).trim();
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'set-launch-policy',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      continue;
+    }
+    if (token === '--sandbox' || token === '-s') {
+      const raw = String(tokens[idx + 1] || '').trim();
+      if (!raw || raw.startsWith('-')) {
+        return {
+          kind: 'set-launch-policy',
+          error: `missing_option_value:${token}`,
+        };
+      }
+      const normalizedSandbox = normalizeCreateSessionSandbox(raw);
+      if (!normalizedSandbox) {
+        return {
+          kind: 'set-launch-policy',
+          error: `invalid_sandbox_mode:${raw}`,
+        };
+      }
+      sandboxMode = normalizedSandbox;
+      idx += 1;
+      continue;
+    }
+    if (token.startsWith('--sandbox=')) {
+      const raw = token.slice('--sandbox='.length).trim();
+      const normalizedSandbox = normalizeCreateSessionSandbox(raw);
+      if (!normalizedSandbox) {
+        return {
+          kind: 'set-launch-policy',
+          error: `invalid_sandbox_mode:${raw}`,
+        };
+      }
+      sandboxMode = normalizedSandbox;
+      continue;
+    }
+    if (token.startsWith('-s=')) {
+      const raw = token.slice('-s='.length).trim();
+      const normalizedSandbox = normalizeCreateSessionSandbox(raw);
+      if (!normalizedSandbox) {
+        return {
+          kind: 'set-launch-policy',
+          error: `invalid_sandbox_mode:${raw}`,
+        };
+      }
+      sandboxMode = normalizedSandbox;
+      continue;
+    }
+    if (token === '--full-auto') {
+      fullAuto = true;
+      continue;
+    }
+    if (token === '--default' || token === 'default') {
+      resetDefault = true;
+      continue;
+    }
+    if (token.startsWith('-')) {
+      return {
+        kind: 'set-launch-policy',
+        error: `unknown_option:${token}`,
+      };
+    }
+    return {
+      kind: 'set-launch-policy',
+      error: `unknown_option:${token}`,
+    };
+  }
+
+  if (resetDefault) {
+    return {
+      kind: 'set-launch-policy',
+      resetDefault: true,
+      approvalPolicy: '',
+      sandboxMode: '',
+      fullAuto: false,
+      codexArgs: [],
+    };
+  }
+
+  const launchPolicy = buildLaunchPolicySpec(approvalPolicy, sandboxMode, fullAuto);
+  if (launchPolicy.codexArgs.length === 0) {
+    return {
+      kind: 'set-launch-policy',
+      error: 'missing_policy_args',
+    };
+  }
+
+  return {
+    kind: 'set-launch-policy',
+    ...launchPolicy,
+  };
 }
 
 function splitCommandTokens(text) {
@@ -711,27 +908,13 @@ function parseCreateSessionCommand(text) {
     name = nameParts.join('-');
   }
 
-  if (fullAuto) {
-    if (!approvalPolicy) approvalPolicy = 'on-request';
-    if (!sandboxMode) sandboxMode = 'workspace-write';
-  }
-
-  const codexArgs = [];
-  if (approvalPolicy) {
-    codexArgs.push('--ask-for-approval', approvalPolicy);
-  }
-  if (sandboxMode) {
-    codexArgs.push('--sandbox', sandboxMode);
-  }
+  const launchPolicy = buildLaunchPolicySpec(approvalPolicy, sandboxMode, fullAuto);
 
   return {
     kind: 'create-session',
     cwd,
     name,
-    approvalPolicy,
-    sandboxMode,
-    fullAuto,
-    codexArgs,
+    ...launchPolicy,
   };
 }
 
@@ -1227,6 +1410,76 @@ async function sendControlChannelHandoff(config, session, trigger = 'terminate')
   }).catch(() => {});
 }
 
+function describeLaunchPolicy(command) {
+  const approval = String(command?.approvalPolicy || '').trim() || '(default)';
+  const sandbox = String(command?.sandboxMode || '').trim() || '(default)';
+  const fullAuto = command?.fullAuto === true;
+  const mode = command?.resetDefault === true ? 'default' : (fullAuto ? 'full-auto' : 'custom');
+  return `mode=${mode}, approval=${approval}, sandbox=${sandbox}`;
+}
+
+async function restartSessionWithLaunchPolicy(session, config, command) {
+  const paneId = String(session?.paneId || '');
+  const channelId = String(session?.channelId || '').trim();
+  if (!paneId) {
+    return { ok: false, error: 'missing_pane_id' };
+  }
+  if (!channelId) {
+    return { ok: false, error: 'missing_channel_id' };
+  }
+
+  const freezeDelete = {
+    ...session,
+    provisionedByChannel: false,
+  };
+  await upsertActiveSession(freezeDelete).catch(() => {});
+
+  const submitted = sendLiteralToPane(paneId, '/exit', true, 1);
+  if (!submitted || !(await waitForPaneExit(paneId, 12000))) {
+    const killBySession = session.tmuxSessionName ? killSession(session.tmuxSessionName) : false;
+    const killByPane = killBySession ? true : killPane(paneId);
+    if (!killByPane) {
+      return { ok: false, error: 'tmux_restart_stop_failed' };
+    }
+    await waitForPaneExit(paneId, 2500);
+  }
+
+  await removeActiveSession(session.sessionId).catch(() => {});
+
+  const channelLookup = await getDiscordChannel(config.discordBot, channelId).catch((error) => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+
+  if (!channelLookup.success) {
+    return {
+      ok: false,
+      error: channelLookup.error || 'discord_channel_lookup_failed',
+    };
+  }
+
+  const channel = channelLookup.channel || {
+    id: channelId,
+    name: session.channelName || DEFAULT_NEW_CHANNEL_NAME,
+  };
+
+  const restarted = await launchProvisionedSession(channel, config, {
+    cwd: session.projectPath || process.cwd(),
+    provisionedByChannel: true,
+    autoChannelNamePending: false,
+    approvalPolicy: command?.approvalPolicy || '',
+    sandboxMode: command?.sandboxMode || '',
+    fullAuto: command?.fullAuto === true,
+    codexArgs: Array.isArray(command?.codexArgs) ? command.codexArgs : [],
+  }).catch(() => null);
+
+  if (!restarted) {
+    return { ok: false, error: 'session_restart_launch_failed' };
+  }
+
+  return { ok: true, session: restarted };
+}
+
 async function terminateSessionFromDiscordCommand(session, config, sourceMessageId = '') {
   const paneId = String(session?.paneId || '');
   const channelId = String(session?.channelId || '').trim();
@@ -1504,6 +1757,78 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
           continue;
         }
       }
+    }
+
+    const policyCommand = parsePolicyCommand(userContent);
+    if (policyCommand?.kind === 'set-launch-policy') {
+      if (!limiter.canProceed()) {
+        state.errors += 1;
+        state.lastError = 'rate_limited';
+        continue;
+      }
+
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+
+      const session = activeSessionByChannelId(activeSessions, channelId);
+      if (!session?.paneId) {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'No active Codex session is bound to this channel.',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      const errorHint = String(policyCommand?.error || '').trim();
+      if (errorHint) {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: [
+            `Cannot update policy: \`${errorHint}\`.`,
+            'Usage: `!ce-perm [--approval <policy>] [--sandbox <mode>] [--full-auto] [--default]`',
+            'Example: `!ce-perm --approval on-request --sandbox workspace-write`',
+            'Approval policy: `untrusted | on-request | on-failure | never`',
+            'Sandbox mode: `read-only | workspace-write | danger-full-access`',
+          ].join('\n'),
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content: [
+          `Updating session launch policy: \`${describeLaunchPolicy(policyCommand)}\`.`,
+          'Restarting Codex in this channel now.',
+        ].join('\n'),
+        replyToMessageId: message.id,
+      }).catch(() => {});
+
+      const restarted = await restartSessionWithLaunchPolicy(session, config, policyCommand);
+      if (!restarted.ok || !restarted.session) {
+        state.errors += 1;
+        state.lastError = restarted.error || 'session_policy_restart_failed';
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: `Policy update failed: ${restarted.error || 'unknown error'}.`,
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      activeSessions = [
+        ...activeSessions.filter((candidate) => candidate?.sessionId !== session.sessionId),
+        restarted.session,
+      ];
+      state.messagesInjected += 1;
+
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content: `Policy applied. New session launch policy: \`${describeLaunchPolicy(policyCommand)}\`.`,
+        replyToMessageId: message.id,
+      }).catch(() => {});
+      continue;
     }
 
     const lifecycle = parseLifecycleCommand(userContent);

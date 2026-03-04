@@ -385,6 +385,24 @@ In a session channel, send:
 
 This reports bound session metadata (session id, channel id, routing key, tmux session, pane id, project path, timestamps) even when debug mode is off.
 
+### Session Policy Command (Provisioned Channel)
+
+In a session channel, send one of:
+
+- `!ce-perm --approval on-request --sandbox workspace-write`
+- `!ce-perm --full-auto`
+- `!ce-perm --default`
+
+Behavior:
+
+- Updates launch policy for that channel's bound session.
+- Restarts Codex in the same Discord channel with new launch args.
+- Supported arguments:
+  - `--approval` / `--ask-for-approval` / `-a`: `untrusted | on-request | on-failure | never`
+  - `--sandbox` / `-s`: `read-only | workspace-write | danger-full-access`
+  - `--full-auto`: shorthand for `--approval on-request --sandbox workspace-write` (unless explicitly overridden)
+  - `--default`: restart without explicit launch policy args (Codex defaults/config apply)
+
 If plain channel messages are injected as empty content, enable **Message Content Intent** for the bot in the Discord Developer Portal.  
 Replies/mentions may still work without it, but plain text command parsing is unreliable when that intent is disabled.
 
