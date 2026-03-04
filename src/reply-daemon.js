@@ -806,8 +806,13 @@ function detectUserInputPrompt(content) {
   }
 
   const snippet = truncate(lines.slice(-16).join(' | '), 700);
+  const headerLine = lines.find((line) => /^question\s+\d+\s*\/\s*\d+/i.test(line)) || '';
+  const progressMatch = headerLine.match(/question\s+(\d+)\s*\/\s*(\d+)/i);
+  const progressKey = progressMatch ? `${progressMatch[1]}/${progressMatch[2]}` : '';
+  const kind = hasConversationInterrupted ? 'conversation-interrupted' : 'request-user-input';
+  const signatureSeed = `${kind}|${progressKey}|${question.toLowerCase()}`;
   const signature = createHash('sha256')
-    .update(`${question}\n${snippet}`)
+    .update(signatureSeed)
     .digest('hex')
     .slice(0, 16);
 
