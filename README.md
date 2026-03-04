@@ -348,6 +348,8 @@ In the control channel, send one of:
 - `!ce-new <name>`
 - `!ce-new --cwd ~/code/my-project`
 - `!ce-new <name> --cwd ~/code/my-project`
+- `!ce-new <name> --approval on-request --sandbox workspace-write`
+- `!ce-new <name> --full-auto`
 
 Behavior:
 
@@ -356,6 +358,10 @@ Behavior:
 - New channel names default to `new-channel` style and are made unique automatically.
 - After early conversation messages, codex-everywhere auto-renames the channel to a topic-like slug (for example, `codex-print-hello-world`).
 - Sends a channel mention + link in control channel so you can jump there quickly.
+- Optional launch policy arguments:
+  - `--approval` / `--ask-for-approval` / `-a`: `untrusted | on-request | on-failure | never`
+  - `--sandbox` / `-s`: `read-only | workspace-write | danger-full-access`
+  - `--full-auto`: shorthand for `--approval on-request --sandbox workspace-write` (unless explicitly overridden)
 
 ### Discord-side Termination Command
 

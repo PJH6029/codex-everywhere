@@ -448,6 +448,17 @@ const CREATE_SESSION_MESSAGE_COMMANDS = new Set([
   '!ce-create',
   '!codex-new',
 ]);
+const CREATE_SESSION_APPROVAL_POLICIES = new Set([
+  'untrusted',
+  'on-request',
+  'on-failure',
+  'never',
+]);
+const CREATE_SESSION_SANDBOX_MODES = new Set([
+  'read-only',
+  'workspace-write',
+  'danger-full-access',
+]);
 const DEFAULT_NEW_CHANNEL_NAME = 'new-channel';
 
 function parseApprovalDecision(text) {
@@ -462,6 +473,16 @@ function parseApprovalDecision(text) {
     return { key: '3', label: 'deny' };
   }
   return null;
+}
+
+function normalizeCreateSessionApproval(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return CREATE_SESSION_APPROVAL_POLICIES.has(normalized) ? normalized : '';
+}
+
+function normalizeCreateSessionSandbox(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return CREATE_SESSION_SANDBOX_MODES.has(normalized) ? normalized : '';
 }
 
 function markConversationInterruptedSuppressed(state, sessionId, ttlMs = DENY_INTERRUPTED_SUPPRESS_MS) {
@@ -544,6 +565,9 @@ function parseCreateSessionCommand(text) {
 
   let cwd = '';
   let name = '';
+  let approvalPolicy = '';
+  let sandboxMode = '';
+  let fullAuto = false;
   const nameParts = [];
 
   for (let idx = 1; idx < tokens.length; idx += 1) {
@@ -566,7 +590,115 @@ function parseCreateSessionCommand(text) {
       name = token.slice('--name='.length).trim();
       continue;
     }
+    if (token === '--approval' || token === '--ask-for-approval' || token === '-a') {
+      const raw = String(tokens[idx + 1] || '').trim();
+      if (!raw || raw.startsWith('-')) {
+        return {
+          kind: 'create-session',
+          error: `missing_option_value:${token}`,
+        };
+      }
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'create-session',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      idx += 1;
+      continue;
+    }
+    if (token.startsWith('--approval=')) {
+      const raw = token.slice('--approval='.length).trim();
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'create-session',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      continue;
+    }
+    if (token.startsWith('--ask-for-approval=')) {
+      const raw = token.slice('--ask-for-approval='.length).trim();
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'create-session',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      continue;
+    }
+    if (token.startsWith('-a=')) {
+      const raw = token.slice('-a='.length).trim();
+      const normalizedApproval = normalizeCreateSessionApproval(raw);
+      if (!normalizedApproval) {
+        return {
+          kind: 'create-session',
+          error: `invalid_approval_policy:${raw}`,
+        };
+      }
+      approvalPolicy = normalizedApproval;
+      continue;
+    }
+    if (token === '--sandbox' || token === '-s') {
+      const raw = String(tokens[idx + 1] || '').trim();
+      if (!raw || raw.startsWith('-')) {
+        return {
+          kind: 'create-session',
+          error: `missing_option_value:${token}`,
+        };
+      }
+      const normalizedSandbox = normalizeCreateSessionSandbox(raw);
+      if (!normalizedSandbox) {
+        return {
+          kind: 'create-session',
+          error: `invalid_sandbox_mode:${raw}`,
+        };
+      }
+      sandboxMode = normalizedSandbox;
+      idx += 1;
+      continue;
+    }
+    if (token.startsWith('--sandbox=')) {
+      const raw = token.slice('--sandbox='.length).trim();
+      const normalizedSandbox = normalizeCreateSessionSandbox(raw);
+      if (!normalizedSandbox) {
+        return {
+          kind: 'create-session',
+          error: `invalid_sandbox_mode:${raw}`,
+        };
+      }
+      sandboxMode = normalizedSandbox;
+      continue;
+    }
+    if (token.startsWith('-s=')) {
+      const raw = token.slice('-s='.length).trim();
+      const normalizedSandbox = normalizeCreateSessionSandbox(raw);
+      if (!normalizedSandbox) {
+        return {
+          kind: 'create-session',
+          error: `invalid_sandbox_mode:${raw}`,
+        };
+      }
+      sandboxMode = normalizedSandbox;
+      continue;
+    }
+    if (token === '--full-auto') {
+      fullAuto = true;
+      continue;
+    }
     if (token.startsWith('--')) {
+      return {
+        kind: 'create-session',
+        error: `unknown_option:${token}`,
+      };
+    }
+    if (token.startsWith('-')) {
       return {
         kind: 'create-session',
         error: `unknown_option:${token}`,
@@ -579,10 +711,27 @@ function parseCreateSessionCommand(text) {
     name = nameParts.join('-');
   }
 
+  if (fullAuto) {
+    if (!approvalPolicy) approvalPolicy = 'on-request';
+    if (!sandboxMode) sandboxMode = 'workspace-write';
+  }
+
+  const codexArgs = [];
+  if (approvalPolicy) {
+    codexArgs.push('--ask-for-approval', approvalPolicy);
+  }
+  if (sandboxMode) {
+    codexArgs.push('--sandbox', sandboxMode);
+  }
+
   return {
     kind: 'create-session',
     cwd,
     name,
+    approvalPolicy,
+    sandboxMode,
+    fullAuto,
+    codexArgs,
   };
 }
 
@@ -891,7 +1040,7 @@ function setProcessedSetForChannel(state, channelId, processed) {
   map[channelId] = Array.from(processed).slice(-200);
 }
 
-function buildRunnerCommand(sessionId, cwd, channelId) {
+function buildRunnerCommand(sessionId, cwd, channelId, passthroughArgs = []) {
   const tokens = [
     'node',
     RUN_CODEX_SCRIPT_PATH,
@@ -902,6 +1051,7 @@ function buildRunnerCommand(sessionId, cwd, channelId) {
     '--channel-id',
     channelId,
     '--',
+    ...passthroughArgs,
   ];
   return tokens.map((token) => shellEscape(token)).join(' ');
 }
@@ -955,7 +1105,8 @@ async function launchProvisionedSession(channel, config, options = {}) {
   const project = sanitizeName(summarizeProject(cwd), 'project');
   const channelName = sanitizeName(String(channel.name || ''), 'channel');
   const sessionName = `ce-${project}-${channelName}-${Date.now().toString(36).slice(-4)}`;
-  const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId);
+  const codexArgs = Array.isArray(options.codexArgs) ? options.codexArgs.filter((item) => typeof item === 'string') : [];
+  const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId, codexArgs);
   const autoChannelNamePending = options.autoChannelNamePending === true;
 
   const created = createDetachedSession(sessionName, cwd, runnerCommand);
@@ -971,6 +1122,9 @@ async function launchProvisionedSession(channel, config, options = {}) {
     channelRoutingKey: `discord:${channelId}`,
     autoChannelNamePending,
     provisionedByChannel: options.provisionedByChannel !== false,
+    launchApprovalPolicy: String(options.approvalPolicy || ''),
+    launchSandboxMode: String(options.sandboxMode || ''),
+    launchFullAuto: options.fullAuto === true,
   });
 
   await notifyEvent('session-start', {
@@ -1135,8 +1289,10 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
       channelId: controlChannelId,
       content: [
         `Cannot create session: \`${errorHint}\`.`,
-        'Usage: `!ce-new [name] --cwd <path>`',
-        'Example: `!ce-new bugfix --cwd ~/code/codex-everywhere`',
+        'Usage: `!ce-new [name] --cwd <path> [--approval <policy>] [--sandbox <mode>] [--full-auto]`',
+        'Example: `!ce-new bugfix --cwd ~/code/codex-everywhere --approval on-request --sandbox workspace-write`',
+        'Approval policy: `untrusted | on-request | on-failure | never`',
+        'Sandbox mode: `read-only | workspace-write | danger-full-access`',
       ].join('\n'),
       replyToMessageId: message.id,
     }).catch(() => {});
@@ -1214,6 +1370,10 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
     cwd: requestedCwd,
     provisionedByChannel: true,
     autoChannelNamePending: !requestedName,
+    approvalPolicy: command?.approvalPolicy || '',
+    sandboxMode: command?.sandboxMode || '',
+    fullAuto: command?.fullAuto === true,
+    codexArgs: Array.isArray(command?.codexArgs) ? command.codexArgs : [],
   }).catch(() => null);
 
   if (!sessionRecord) {
@@ -1422,6 +1582,9 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
           session.startedAt ? `Started: \`${session.startedAt}\`` : null,
           session.channelName ? `Channel Name: \`${session.channelName}\`` : null,
           `Auto Name Pending: \`${session.autoChannelNamePending === true}\``,
+          `Launch Approval: \`${session.launchApprovalPolicy || '(default)'}\``,
+          `Launch Sandbox: \`${session.launchSandboxMode || '(default)'}\``,
+          `Launch Full Auto: \`${session.launchFullAuto === true}\``,
         ]
           .filter(Boolean)
           .join('\n'),
