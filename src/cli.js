@@ -43,6 +43,7 @@ Usage:
   codex-everywhere [codex args...]
   codex-everywhere setup discord [options]
   codex-everywhere daemon start [--debug|--no-debug]
+  codex-everywhere daemon restart [--debug|--no-debug]
   codex-everywhere daemon <stop|status>
   codex-everywhere sessions [list] [--all]
   codex-everywhere sessions attach [selector] [--pane] [--lines <n>] [--all]
@@ -767,8 +768,8 @@ function parseDaemonCommandOptions(args) {
     throw new Error(`unknown daemon option: ${token}`);
   }
 
-  if (typeof debug === 'boolean' && command !== 'start') {
-    throw new Error('`--debug` and `--no-debug` are only supported with `daemon start`');
+  if (typeof debug === 'boolean' && command !== 'start' && command !== 'restart') {
+    throw new Error('`--debug` and `--no-debug` are only supported with `daemon start|restart`');
   }
 
   return { command, debug };
@@ -783,6 +784,18 @@ async function handleDaemonCommand(args) {
     process.exit(result.success ? 0 : 1);
   }
 
+  if (command === 'restart') {
+    const stopResult = await stopDaemon();
+    console.log(stopResult.message);
+    if (!stopResult.success) {
+      process.exit(1);
+    }
+
+    const startResult = await startDaemon({ debug });
+    console.log(startResult.message);
+    process.exit(startResult.success ? 0 : 1);
+  }
+
   if (command === 'stop') {
     const result = await stopDaemon();
     console.log(result.message);
@@ -795,7 +808,7 @@ async function handleDaemonCommand(args) {
     process.exit(0);
   }
 
-  throw new Error('unknown daemon command. Use start|stop|status');
+  throw new Error('unknown daemon command. Use start|restart|stop|status');
 }
 
 async function handleSetupCommand(args) {

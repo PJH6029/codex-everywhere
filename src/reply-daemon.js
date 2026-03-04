@@ -1823,6 +1823,18 @@ async function main() {
     process.exit(result.success ? 0 : 1);
   }
 
+  if (command === 'restart') {
+    const stopResult = await stopDaemon();
+    console.log(stopResult.message);
+    if (!stopResult.success) {
+      process.exit(1);
+    }
+
+    const startResult = await startDaemon({ debug: debugOption });
+    console.log(startResult.message);
+    process.exit(startResult.success ? 0 : 1);
+  }
+
   if (command === 'stop') {
     const result = await stopDaemon();
     console.log(result.message);
@@ -1835,7 +1847,7 @@ async function main() {
     process.exit(0);
   }
 
-  console.error('Usage: reply-daemon.js [start|stop|status|run]');
+  console.error('Usage: reply-daemon.js [start|restart|stop|status|run]');
   process.exit(1);
 }
 
