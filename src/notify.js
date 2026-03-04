@@ -12,6 +12,7 @@ function eventEnabled(config, event) {
   if (event === 'turn-complete') return config.events.turnComplete;
   if (event === 'user-input') return config.events.userInput;
   if (event === 'approval-request') return config.events.approvalRequest;
+  if (event === 'ask-user-question') return config.events.askUserQuestion;
   return true;
 }
 
@@ -83,11 +84,23 @@ function formatApprovalRequest(payload) {
   ].join('\n');
 }
 
+function formatAskUserQuestion(payload) {
+  const question = truncate(payload.question || payload.content || '', 1000);
+  return [
+    '# Input Needed',
+    '',
+    question || 'Codex is waiting for your response.',
+    '',
+    'Reply in this channel to continue.',
+  ].join('\n');
+}
+
 function formatMessage(event, payload, debug = false) {
   if (event === 'session-start') return formatSessionStart(payload, debug);
   if (event === 'session-end') return formatSessionEnd(payload, debug);
   if (event === 'user-input') return formatUserInput(payload, debug);
   if (event === 'approval-request') return formatApprovalRequest(payload);
+  if (event === 'ask-user-question') return formatAskUserQuestion(payload);
   return formatTurnComplete(payload, debug);
 }
 

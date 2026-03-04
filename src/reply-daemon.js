@@ -68,9 +68,11 @@ const DEFAULT_STATE = {
   provisionKnownChannelIds: [],
   lastProvisionScanAt: null,
   approvalsNotified: 0,
+  userQuestionsNotified: 0,
   errors: 0,
   lastError: '',
   lastApprovalBySession: {},
+  lastUserQuestionBySession: {},
   debug: false,
 };
 
@@ -737,6 +739,74 @@ function detectApprovalPrompt(content) {
 
   return {
     command,
+    signature,
+    snippet,
+  };
+}
+
+function detectUserInputPrompt(content) {
+  const normalized = String(content || '');
+  if (!normalized) return null;
+
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+
+  const lower = lines.join('\n').toLowerCase();
+  const hasRequestOverlay =
+    lines.some((line) => /^question\s+\d+\s*\/\s*\d+/i.test(line)) &&
+    lower.includes('enter to submit answer') &&
+    lower.includes('esc to interrupt');
+  const hasConversationInterrupted =
+    lower.includes('conversation interrupted - tell the model what to do differently');
+
+  if (!hasRequestOverlay && !hasConversationInterrupted) {
+    return null;
+  }
+
+  let question = '';
+
+  if (hasRequestOverlay) {
+    const headerIndex = lines.findIndex((line) => /^question\s+\d+\s*\/\s*\d+/i.test(line));
+    if (headerIndex >= 0) {
+      for (let idx = headerIndex + 1; idx < lines.length; idx += 1) {
+        const line = lines[idx];
+        if (!line) continue;
+        if (
+          /^\d+\.\s/.test(line) ||
+          /^[›>]\s*\d+\.\s/.test(line) ||
+          /^type your answer/i.test(line) ||
+          /^tab to add notes/i.test(line) ||
+          /^enter to submit answer/i.test(line) ||
+          /^←\/→ to navigate questions/i.test(line) ||
+          /^esc to interrupt/i.test(line)
+        ) {
+          continue;
+        }
+        question = line;
+        break;
+      }
+    }
+  }
+
+  if (!question && hasConversationInterrupted) {
+    question = 'Conversation was interrupted. Tell Codex what to do differently.';
+  }
+
+  if (!question) {
+    question = 'Codex is waiting for your response.';
+  }
+
+  const snippet = truncate(lines.slice(-16).join(' | '), 700);
+  const signature = createHash('sha256')
+    .update(`${question}\n${snippet}`)
+    .digest('hex')
+    .slice(0, 16);
+
+  return {
+    question,
     signature,
     snippet,
   };
@@ -1513,7 +1583,7 @@ async function provisionSessionsForNewChannels(config, state, activeSessions) {
   return nextSessions;
 }
 
-async function scanApprovalPrompts(config, state) {
+async function scanInteractivePrompts(config, state) {
   const paneIds = listPaneIds();
   const sessions = await pruneActiveSessions(paneIds);
   const seenSessions = new Set();
@@ -1525,36 +1595,59 @@ async function scanApprovalPrompts(config, state) {
 
     const paneContent = capturePane(session.paneId, 90);
     const approval = detectApprovalPrompt(paneContent);
+    const userQuestion = detectUserInputPrompt(paneContent);
 
     if (!approval) {
       if (state.lastApprovalBySession[session.sessionId]) {
         delete state.lastApprovalBySession[session.sessionId];
       }
-      continue;
+    } else if (state.lastApprovalBySession[session.sessionId] !== approval.signature) {
+      const result = await notifyEvent('approval-request', {
+        sessionId: session.sessionId,
+        paneId: session.paneId,
+        tmuxSessionName: session.tmuxSessionName || '',
+        channelId: session.channelId || config.discordBot.channelId || '',
+        projectPath: session.projectPath || session.cwd,
+        command: approval.command || approval.snippet,
+      });
+
+      if (result.success) {
+        state.approvalsNotified += 1;
+        state.lastApprovalBySession[session.sessionId] = approval.signature;
+      }
     }
 
-    if (state.lastApprovalBySession[session.sessionId] === approval.signature) {
-      continue;
-    }
+    if (!userQuestion) {
+      if (state.lastUserQuestionBySession[session.sessionId]) {
+        delete state.lastUserQuestionBySession[session.sessionId];
+      }
+    } else if (state.lastUserQuestionBySession[session.sessionId] !== userQuestion.signature) {
+      const result = await notifyEvent('ask-user-question', {
+        sessionId: session.sessionId,
+        paneId: session.paneId,
+        tmuxSessionName: session.tmuxSessionName || '',
+        channelId: session.channelId || config.discordBot.channelId || '',
+        projectPath: session.projectPath || session.cwd,
+        question: userQuestion.question,
+        content: userQuestion.question || userQuestion.snippet,
+      });
 
-    const result = await notifyEvent('approval-request', {
-      sessionId: session.sessionId,
-      paneId: session.paneId,
-      tmuxSessionName: session.tmuxSessionName || '',
-      channelId: session.channelId || config.discordBot.channelId || '',
-      projectPath: session.projectPath || session.cwd,
-      command: approval.command || approval.snippet,
-    });
-
-    if (result.success) {
-      state.approvalsNotified += 1;
-      state.lastApprovalBySession[session.sessionId] = approval.signature;
+      if (result.success) {
+        state.userQuestionsNotified += 1;
+        state.lastUserQuestionBySession[session.sessionId] = userQuestion.signature;
+      }
     }
   }
 
   for (const sessionId of Object.keys(state.lastApprovalBySession)) {
     if (!seenSessions.has(sessionId)) {
       delete state.lastApprovalBySession[sessionId];
+    }
+  }
+
+  for (const sessionId of Object.keys(state.lastUserQuestionBySession)) {
+    if (!seenSessions.has(sessionId)) {
+      delete state.lastUserQuestionBySession[sessionId];
     }
   }
 }
@@ -1646,7 +1739,7 @@ async function runDaemonLoop() {
       }
 
       if (config.notificationsEnabled && config.discordBot.enabled) {
-        await scanApprovalPrompts(config, state);
+        await scanInteractivePrompts(config, state);
       }
 
       if (Date.now() - lastPruneAt > PRUNE_INTERVAL_MS) {

@@ -32,6 +32,57 @@ function readField(payload, keys) {
   return '';
 }
 
+function asNonEmptyString(value) {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  return text.length > 0 ? text : '';
+}
+
+function readQuestionFromObject(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return asNonEmptyString(value);
+  if (typeof value !== 'object') return '';
+
+  const direct = [
+    asNonEmptyString(value.question),
+    asNonEmptyString(value.prompt),
+    asNonEmptyString(value.message),
+    asNonEmptyString(value.content),
+    asNonEmptyString(value.title),
+  ].find(Boolean);
+  if (direct) return direct;
+
+  const questions = value.questions;
+  if (Array.isArray(questions)) {
+    for (const item of questions) {
+      const extracted = readQuestionFromObject(item);
+      if (extracted) return extracted;
+    }
+  }
+
+  return '';
+}
+
+function readQuestion(payload) {
+  const direct = readField(payload, ['question', 'ask-user-question', 'ask_user_question']);
+  if (direct) return direct;
+
+  const nestedCandidates = [
+    payload?.['ask-user-question'],
+    payload?.ask_user_question,
+    payload?.['request-user-input'],
+    payload?.request_user_input,
+    payload?.requestUserInput,
+  ];
+
+  for (const candidate of nestedCandidates) {
+    const extracted = readQuestionFromObject(candidate);
+    if (extracted) return extracted;
+  }
+
+  return '';
+}
+
 function readInputMessages(payload) {
   const candidates = [payload?.['input-messages'], payload?.input_messages, payload?.inputMessages];
   for (const candidate of candidates) {
@@ -124,7 +175,7 @@ async function main() {
     readField(payload, ['discord_channel_id', 'discord-channel-id', 'channel_id', 'channel-id']);
 
   const assistantMessage = readField(payload, ['last-assistant-message', 'last_assistant_message']);
-  const question = readField(payload, ['question', 'ask-user-question']);
+  const question = readQuestion(payload);
   const inputMessages = readInputMessages(payload);
   const latestInput = normalizeUserInputForSync(inputMessages.slice(-1)[0] || '');
 
@@ -167,13 +218,14 @@ async function main() {
   }
 
   if (question) {
-    await notifyEvent('approval-request', {
+    await notifyEvent('ask-user-question', {
       sessionId,
       paneId,
       tmuxSessionName,
       projectPath,
       channelId,
-      command: question,
+      question,
+      content: question,
     }).catch(() => {});
   }
 

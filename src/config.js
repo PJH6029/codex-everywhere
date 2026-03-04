@@ -243,9 +243,8 @@ export function loadAppConfig() {
       userInput:
         eventEnabled(events, 'user-input', true) &&
         eventEnabled(events, 'input-message', true),
-      approvalRequest:
-        eventEnabled(events, 'approval-request', true) &&
-        eventEnabled(events, 'ask-user-question', true),
+      approvalRequest: eventEnabled(events, 'approval-request', true),
+      askUserQuestion: eventEnabled(events, 'ask-user-question', true),
     },
     rawConfigPath: OMX_CONFIG_PATH,
   };
