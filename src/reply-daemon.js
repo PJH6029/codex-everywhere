@@ -73,10 +73,12 @@ const DEFAULT_STATE = {
   lastError: '',
   lastApprovalBySession: {},
   lastUserQuestionBySession: {},
+  suppressConversationInterruptedBySession: {},
   debug: false,
 };
 
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+const DENY_INTERRUPTED_SUPPRESS_MS = 15000;
 const REPLY_DAEMON_SCRIPT_PATH = fileURLToPath(import.meta.url);
 const RUN_CODEX_SCRIPT_PATH = fileURLToPath(new URL('./run-codex.js', import.meta.url));
 const OMX_REPLY_LISTENER_PATTERNS = [
@@ -462,6 +464,33 @@ function parseApprovalDecision(text) {
   return null;
 }
 
+function markConversationInterruptedSuppressed(state, sessionId, ttlMs = DENY_INTERRUPTED_SUPPRESS_MS) {
+  const id = String(sessionId || '').trim();
+  if (!id) return;
+  if (!state.suppressConversationInterruptedBySession || typeof state.suppressConversationInterruptedBySession !== 'object') {
+    state.suppressConversationInterruptedBySession = {};
+  }
+  state.suppressConversationInterruptedBySession[id] = Date.now() + Math.max(1000, Math.trunc(ttlMs));
+}
+
+function isConversationInterruptedSuppressed(state, sessionId) {
+  const id = String(sessionId || '').trim();
+  if (!id) return false;
+  const map = state.suppressConversationInterruptedBySession;
+  if (!map || typeof map !== 'object') return false;
+
+  const expiresAt = Number(map[id] || 0);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+    delete map[id];
+    return false;
+  }
+  if (expiresAt <= Date.now()) {
+    delete map[id];
+    return false;
+  }
+  return true;
+}
+
 function hasPendingApprovalForPane(paneId) {
   if (!paneId) return false;
   const paneContent = capturePane(paneId, 90);
@@ -818,6 +847,7 @@ function detectUserInputPrompt(content) {
 
   return {
     question,
+    kind,
     signature,
     snippet,
   };
@@ -1467,6 +1497,8 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
         if (!followupOk) {
           state.errors += 1;
           state.lastError = 'tmux_deny_followup_failed';
+        } else {
+          markConversationInterruptedSuppressed(state, mapping.sessionId);
         }
       }
     } else {
@@ -1654,6 +1686,14 @@ async function scanInteractivePrompts(config, state) {
         delete state.lastUserQuestionBySession[session.sessionId];
       }
     } else if (state.lastUserQuestionBySession[session.sessionId] !== userQuestion.signature) {
+      if (
+        userQuestion.kind === 'conversation-interrupted' &&
+        isConversationInterruptedSuppressed(state, session.sessionId)
+      ) {
+        state.lastUserQuestionBySession[session.sessionId] = userQuestion.signature;
+        continue;
+      }
+
       const result = await notifyEvent('ask-user-question', {
         sessionId: session.sessionId,
         paneId: session.paneId,
@@ -1680,6 +1720,22 @@ async function scanInteractivePrompts(config, state) {
   for (const sessionId of Object.keys(state.lastUserQuestionBySession)) {
     if (!seenSessions.has(sessionId)) {
       delete state.lastUserQuestionBySession[sessionId];
+    }
+  }
+
+  if (
+    state.suppressConversationInterruptedBySession &&
+    typeof state.suppressConversationInterruptedBySession === 'object'
+  ) {
+    for (const sessionId of Object.keys(state.suppressConversationInterruptedBySession)) {
+      if (!seenSessions.has(sessionId)) {
+        delete state.suppressConversationInterruptedBySession[sessionId];
+        continue;
+      }
+      const expiresAt = Number(state.suppressConversationInterruptedBySession[sessionId] || 0);
+      if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+        delete state.suppressConversationInterruptedBySession[sessionId];
+      }
     }
   }
 }
