@@ -462,6 +462,12 @@ function parseApprovalDecision(text) {
   return null;
 }
 
+function hasPendingApprovalForPane(paneId) {
+  if (!paneId) return false;
+  const paneContent = capturePane(paneId, 90);
+  return !!detectApprovalPrompt(paneContent);
+}
+
 function parseLifecycleCommand(text) {
   const normalized = String(text || '')
     .replace(/^(?:<@!?\d{17,20}>\s*)+/g, '')
@@ -953,6 +959,9 @@ async function injectReplyToPane(mapping, text, config) {
 async function injectApprovalDecision(mapping, text) {
   const parsed = parseApprovalDecision(text);
   if (!parsed) return { ok: false, reason: 'invalid_decision' };
+  if (!hasPendingApprovalForPane(mapping.tmuxPaneId)) {
+    return { ok: false, reason: 'no_pending_approval' };
+  }
 
   const ok = sendLiteralToPane(mapping.tmuxPaneId, parsed.key, true, 1);
   return ok ? { ok: true, decision: parsed.label } : { ok: false, reason: 'tmux_injection_failed' };
@@ -1408,6 +1417,18 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
       };
     }
 
+    // Allow plain channel replies like "y"/"n" during approval overlays without
+    // requiring reply threading; this avoids accidental chat-prefix injection.
+    if (mapping.kind === 'chat') {
+      const parsedDecision = parseApprovalDecision(userContent);
+      if (parsedDecision && hasPendingApprovalForPane(mapping.tmuxPaneId)) {
+        mapping = {
+          ...mapping,
+          kind: 'approval',
+        };
+      }
+    }
+
     if (!limiter.canProceed()) {
       state.errors += 1;
       state.lastError = 'rate_limited';
@@ -1422,6 +1443,12 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
         await sendDiscordMessage(config.discordBot, {
           channelId,
           content: 'Approval reply must start with `y`, `p`, or `n`.',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+      } else if (!injectResult.ok && injectResult.reason === 'no_pending_approval') {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'No approval prompt is currently active for this session.',
           replyToMessageId: message.id,
         }).catch(() => {});
       }
