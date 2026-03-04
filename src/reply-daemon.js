@@ -951,16 +951,23 @@ function detectUserInputPrompt(content) {
   }
 
   let question = '';
+  let promptContent = '';
+  let optionLines = [];
 
   if (hasRequestOverlay) {
     const headerIndex = lines.findIndex((line) => /^question\s+\d+\s*\/\s*\d+/i.test(line));
     if (headerIndex >= 0) {
+      const questionLines = [];
+      const collectedOptions = [];
       for (let idx = headerIndex + 1; idx < lines.length; idx += 1) {
         const line = lines[idx];
         if (!line) continue;
+        const normalizedOption = line.replace(/^[›>]\s*/, '');
+        if (/^(?:[›>]\s*)?\d+\.\s+/.test(line)) {
+          collectedOptions.push(normalizedOption);
+          continue;
+        }
         if (
-          /^\d+\.\s/.test(line) ||
-          /^[›>]\s*\d+\.\s/.test(line) ||
           /^type your answer/i.test(line) ||
           /^tab to add notes/i.test(line) ||
           /^enter to submit answer/i.test(line) ||
@@ -969,8 +976,18 @@ function detectUserInputPrompt(content) {
         ) {
           continue;
         }
-        question = line;
-        break;
+        if (collectedOptions.length > 0) {
+          continue;
+        }
+        questionLines.push(line);
+      }
+      optionLines = collectedOptions;
+      question = questionLines.join(' ').trim();
+      if (question || optionLines.length > 0) {
+        promptContent = [question, optionLines.length > 0 ? optionLines.join('\n') : '']
+          .filter(Boolean)
+          .join('\n\n')
+          .trim();
       }
     }
   }
@@ -982,13 +999,18 @@ function detectUserInputPrompt(content) {
   if (!question) {
     question = 'Codex is waiting for your response.';
   }
+  if (!promptContent) {
+    promptContent = question;
+  }
 
   const snippet = truncate(lines.slice(-16).join(' | '), 700);
   const headerLine = lines.find((line) => /^question\s+\d+\s*\/\s*\d+/i.test(line)) || '';
   const progressMatch = headerLine.match(/question\s+(\d+)\s*\/\s*(\d+)/i);
   const progressKey = progressMatch ? `${progressMatch[1]}/${progressMatch[2]}` : '';
   const kind = hasConversationInterrupted ? 'conversation-interrupted' : 'request-user-input';
-  const signatureSeed = `${kind}|${progressKey}|${question.toLowerCase()}`;
+  const signatureSeed = `${kind}|${progressKey}|${question.toLowerCase()}|${optionLines
+    .map((line) => line.toLowerCase())
+    .join('|')}`;
   const signature = createHash('sha256')
     .update(signatureSeed)
     .digest('hex')
@@ -996,6 +1018,7 @@ function detectUserInputPrompt(content) {
 
   return {
     question,
+    content: promptContent,
     kind,
     signature,
     snippet,
@@ -1864,7 +1887,7 @@ async function scanInteractivePrompts(config, state) {
         channelId: session.channelId || config.discordBot.channelId || '',
         projectPath: session.projectPath || session.cwd,
         question: userQuestion.question,
-        content: userQuestion.question || userQuestion.snippet,
+        content: userQuestion.content || userQuestion.question || userQuestion.snippet,
       });
 
       if (result.success) {

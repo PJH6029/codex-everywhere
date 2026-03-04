@@ -85,11 +85,13 @@ function formatApprovalRequest(payload) {
 }
 
 function formatAskUserQuestion(payload) {
-  const question = truncate(payload.question || payload.content || '', 1000);
+  const prompt = truncate(String(payload.content || payload.question || ''), 1300);
+  const formattedPrompt =
+    prompt && prompt.includes('\n') ? `\`\`\`text\n${prompt}\n\`\`\`` : prompt;
   return [
     '# Input Needed',
     '',
-    question || 'Codex is waiting for your response.',
+    formattedPrompt || 'Codex is waiting for your response.',
     '',
     'Reply in this channel to continue.',
   ].join('\n');
