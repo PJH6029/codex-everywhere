@@ -2,7 +2,9 @@
 
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { removeActiveSession } from './active-sessions.js';
+import { findActiveSessionById, removeActiveSession } from './active-sessions.js';
+import { loadAppConfig } from './config.js';
+import { deleteDiscordChannel, sendDiscordMessage } from './discord.js';
 import { notifyEvent } from './notify.js';
 import { appendJsonl, resolveFromCwd, sleep, todayFileName } from './utils.js';
 
@@ -83,6 +85,89 @@ async function notifyWithRetry(event, payload, options = {}) {
   return lastResult;
 }
 
+function shouldDeleteManagedChannel(session, config) {
+  const channelId = String(session?.channelId || '').trim();
+  if (!channelId || !/^\d{17,20}$/.test(channelId)) return false;
+  if (channelId === String(config?.discordBot?.channelId || '').trim()) return false;
+  return session?.provisionedByChannel === true;
+}
+
+async function sendControlChannelHandoff(config, session, trigger = 'session-end') {
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  const sessionChannelId = String(session?.channelId || '').trim();
+  if (!controlChannelId || controlChannelId === sessionChannelId) return;
+
+  const debug = config?.debug === true;
+  await sendDiscordMessage(config.discordBot, {
+    channelId: controlChannelId,
+    content: [
+      debug
+        ? `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`
+        : `A Codex session finished via ${trigger}.`,
+      `Continue here in <#${controlChannelId}>.`,
+      'Create another session with `!ce-new [name] --cwd <path>`.',
+    ].join('\n'),
+  }).catch(() => {});
+}
+
+async function cleanupManagedSessionChannelOnExit(session, reason = 'session-end') {
+  if (!session || typeof session !== 'object') {
+    return { deleted: false, reason: 'session_missing' };
+  }
+
+  const config = loadAppConfig();
+  if (!config.notificationsEnabled || !config.discordBot.enabled) {
+    return { deleted: false, reason: 'discord_not_configured' };
+  }
+
+  if (!shouldDeleteManagedChannel(session, config)) {
+    return { deleted: false, reason: 'not_managed_channel' };
+  }
+
+  const channelId = String(session.channelId || '').trim();
+  const deleteResult = await deleteDiscordChannel(
+    config.discordBot,
+    channelId,
+    `codex-everywhere:run-codex:${reason}`,
+  ).catch((error) => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+
+  if (deleteResult.success) {
+    await sendControlChannelHandoff(config, session, reason).catch(() => {});
+    return { deleted: true, reason: '' };
+  }
+
+  const errorText = String(deleteResult.error || 'discord_delete_channel_failed');
+  if (errorText.includes('discord_http_404')) {
+    // Already deleted by another path (CLI/Discord termination flow).
+    return { deleted: true, reason: 'already_deleted' };
+  }
+
+  const detail = errorText.includes('missing_permissions')
+    ? `${errorText} (grant the bot 'Manage Channels' permission on this channel/category)`
+    : errorText;
+
+  await sendDiscordMessage(config.discordBot, {
+    channelId,
+    content: `Failed to auto-delete this session channel: ${detail}`,
+  }).catch(() => {});
+
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  if (controlChannelId && controlChannelId !== channelId) {
+    await sendDiscordMessage(config.discordBot, {
+      channelId: controlChannelId,
+      content:
+        config.debug === true
+          ? `Failed to auto-delete session \`${session.sessionId || ''}\` channel <#${channelId}>: ${detail}`
+          : `Failed to auto-delete a finished session channel <#${channelId}>: ${detail}`,
+    }).catch(() => {});
+  }
+
+  return { deleted: false, reason: detail };
+}
+
 async function main() {
   const parsed = parseArgs(process.argv.slice(2));
   const sessionId = parsed.sessionId || process.env.CODEX_EVERYWHERE_SESSION_ID || 'unknown-session';
@@ -112,9 +197,11 @@ async function main() {
   });
 
   child.on('exit', async (code, signal) => {
+    const reason = signal ? `signal:${signal}` : `exit:${code ?? 0}`;
+    const activeSession = await findActiveSessionById(sessionId).catch(() => null);
+
     await removeActiveSession(sessionId).catch(() => {});
 
-    const reason = signal ? `signal:${signal}` : `exit:${code ?? 0}`;
     await notifyWithRetry('session-end', {
       sessionId,
       paneId: process.env.TMUX_PANE || '',
@@ -124,6 +211,8 @@ async function main() {
       reason,
     }, { attempts: 3, baseDelayMs: 600 });
 
+    await cleanupManagedSessionChannelOnExit(activeSession, 'session-end').catch(() => {});
+
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -132,7 +221,9 @@ async function main() {
   });
 
   child.on('error', async (error) => {
+    const activeSession = await findActiveSessionById(sessionId).catch(() => null);
     await removeActiveSession(sessionId).catch(() => {});
+    await cleanupManagedSessionChannelOnExit(activeSession, 'spawn-error').catch(() => {});
     console.error(`[codex-everywhere] failed to start codex: ${error instanceof Error ? error.message : String(error)}`);
     process.exit(1);
   });

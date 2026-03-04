@@ -280,13 +280,13 @@ pkill -f 'oh-my-codex/dist/notifications/reply-listener.js'
 
 ## Session Access (From Desktop)
 
-List Discord-provisioned sessions:
+List active sessions:
 
 ```bash
 codex-everywhere sessions list
 ```
 
-Include all active sessions (including control-channel sessions):
+`--all` is retained for backward compatibility and currently behaves the same:
 
 ```bash
 codex-everywhere sessions list --all
@@ -336,6 +336,7 @@ When denying with `n`, codex-everywhere also injects a short follow-up instructi
 The configured `notifications.discord-bot.channelId` acts as the control channel and guild anchor.
 
 - Existing matching channels are baselined when daemon starts.
+- Running `codex-everywhere` from terminal also provisions a per-session Discord channel by default (when provisioning is enabled).
 - Creating a new matching text channel (same guild, optional prefix/category filters) auto-starts a new detached Codex session bound to that channel.
 - Any authorized user message in that channel is injected into its bound Codex session.
 - Reply-threading still works; channel routing is used as fallback when message references are absent.
