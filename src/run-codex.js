@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { findActiveSessionById, removeActiveSession } from './active-sessions.js';
 import { loadAppConfig } from './config.js';
