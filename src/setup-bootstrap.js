@@ -10,17 +10,12 @@ import { createHash } from 'crypto';
 const SETUP_SKILL_SOURCE_PATH = fileURLToPath(
   new URL('../.agents/skills/setup-discord/SKILL.md', import.meta.url),
 );
-const SETUP_SKILL_DEST_PATH = resolve(
-  process.env.HOME || '',
-  '.codex',
-  'skills',
-  'setup-discord',
-  'SKILL.md',
-);
 const PROJECT_CODEX_CONFIG_PATH = resolve(process.cwd(), '.codex', 'config.toml');
 const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'config.toml');
 const PROJECT_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap config';
 const PROJECT_CONFIG_END = '# END codex-everywhere bootstrap config';
+const PROJECT_SKILLS_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap skills';
+const PROJECT_SKILLS_CONFIG_END = '# END codex-everywhere bootstrap skills';
 
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -30,6 +25,18 @@ function tomlString(value) {
   return `"${String(value || '')
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')}"`;
+}
+
+function normalizePathForToml(value) {
+  return String(value || '').replace(/\\/g, '/');
+}
+
+function resolveLocalSkillDir(cwd) {
+  return resolve(cwd, '.codex', 'skills', 'setup-discord');
+}
+
+function resolveLocalSkillFile(cwd) {
+  return resolve(resolveLocalSkillDir(cwd), 'SKILL.md');
 }
 
 function buildProjectConfigBlock(cwd) {
@@ -55,6 +62,18 @@ function buildProjectConfigBlock(cwd) {
     '[apps.playwright.tools.browser_close]',
     'approval_mode = "approve"',
     PROJECT_CONFIG_END,
+    '',
+  ].join('\n');
+}
+
+function buildProjectSkillsConfigBlock(cwd) {
+  const localSkillDir = normalizePathForToml(resolveLocalSkillDir(cwd));
+  return [
+    PROJECT_SKILLS_CONFIG_BEGIN,
+    '[[skills.config]]',
+    `path = ${tomlString(localSkillDir)}`,
+    'enabled = true',
+    PROJECT_SKILLS_CONFIG_END,
     '',
   ].join('\n');
 }
@@ -94,6 +113,34 @@ async function writeProjectConfigBlock(cwd) {
   await mkdir(dirname(PROJECT_CODEX_CONFIG_PATH), { recursive: true });
   await writeFile(PROJECT_CODEX_CONFIG_PATH, next, 'utf-8');
   console.log(`[codex-everywhere] wrote project config: ${PROJECT_CODEX_CONFIG_PATH}`);
+}
+
+async function writeProjectSkillsConfigBlock(cwd) {
+  const current = await readTextOrEmpty(PROJECT_CODEX_CONFIG_PATH);
+  const localSkillDir = normalizePathForToml(resolveLocalSkillDir(cwd));
+  const hasEquivalentSkillConfig =
+    current.includes(`path = ${tomlString(localSkillDir)}`) ||
+    current.includes('.codex/skills/setup-discord');
+  const block = buildProjectSkillsConfigBlock(cwd);
+
+  let next = current;
+  if (current.includes(PROJECT_SKILLS_CONFIG_BEGIN) && current.includes(PROJECT_SKILLS_CONFIG_END)) {
+    const pattern = new RegExp(
+      `${escapeRegExp(PROJECT_SKILLS_CONFIG_BEGIN)}[\\s\\S]*?${escapeRegExp(PROJECT_SKILLS_CONFIG_END)}\\n?`,
+      'm',
+    );
+    next = current.replace(pattern, block);
+  } else if (!current.trim()) {
+    next = `${block}`;
+  } else if (hasEquivalentSkillConfig) {
+    // Preserve existing skill config if user already manages it.
+    return;
+  } else {
+    next = `${current.trimEnd()}\n\n${block}`;
+  }
+
+  await mkdir(dirname(PROJECT_CODEX_CONFIG_PATH), { recursive: true });
+  await writeFile(PROJECT_CODEX_CONFIG_PATH, next, 'utf-8');
 }
 
 function replaceTrustInsideProjectTable(content, escapedProjectPath) {
@@ -265,17 +312,15 @@ function tryInstallTmux() {
   return false;
 }
 
-async function ensureSetupDiscordSkillInstalled() {
-  if (!process.env.HOME) {
-    throw new Error('HOME environment variable is not set');
-  }
+async function ensureSetupDiscordSkillInstalled(cwd) {
   if (!existsSync(SETUP_SKILL_SOURCE_PATH)) {
     throw new Error(`setup-discord skill source not found: ${SETUP_SKILL_SOURCE_PATH}`);
   }
 
-  await mkdir(dirname(SETUP_SKILL_DEST_PATH), { recursive: true });
-  await copyFile(SETUP_SKILL_SOURCE_PATH, SETUP_SKILL_DEST_PATH);
-  console.log(`[codex-everywhere] installed skill at ${SETUP_SKILL_DEST_PATH}`);
+  const localSkillFile = resolveLocalSkillFile(cwd);
+  await mkdir(dirname(localSkillFile), { recursive: true });
+  await copyFile(SETUP_SKILL_SOURCE_PATH, localSkillFile);
+  console.log(`[codex-everywhere] installed local skill at ${localSkillFile}`);
 }
 
 function launchGuidedSetupSession(options) {
@@ -327,8 +372,9 @@ export async function runBootstrapSetupCommand(args = []) {
   }
 
   await writeProjectConfigBlock(cwd);
+  await writeProjectSkillsConfigBlock(cwd);
   await ensureProjectTrusted(cwd);
-  await ensureSetupDiscordSkillInstalled();
+  await ensureSetupDiscordSkillInstalled(cwd);
 
   console.log('[codex-everywhere] bootstrap preparation complete.');
   console.log('[codex-everywhere] project-scoped Codex config for playwright MCP + tool approvals is ready.');
