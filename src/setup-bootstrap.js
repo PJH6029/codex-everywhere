@@ -10,6 +10,12 @@ import { createHash } from 'crypto';
 const SETUP_SKILL_SOURCE_PATH = fileURLToPath(
   new URL('../.agents/skills/setup-discord/SKILL.md', import.meta.url),
 );
+const BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH = fileURLToPath(
+  new URL('../bootstrap/project-config.toml', import.meta.url),
+);
+const BOOTSTRAP_GUIDED_PROMPT_TEMPLATE_PATH = fileURLToPath(
+  new URL('../bootstrap/guided-setup-prompt.txt', import.meta.url),
+);
 const PROJECT_CODEX_CONFIG_PATH = resolve(process.cwd(), '.codex', 'config.toml');
 const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'config.toml');
 const PROJECT_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap config';
@@ -37,31 +43,44 @@ function resolveLocalSkillFile(cwd) {
   return resolve(resolveLocalSkillDir(cwd), 'SKILL.md');
 }
 
-function buildProjectConfigBlock(cwd) {
+function renderTemplate(template, replacements) {
+  let rendered = String(template || '');
+  for (const [key, value] of Object.entries(replacements || {})) {
+    const pattern = new RegExp(`\\{\\{${escapeRegExp(key)}\\}\\}`, 'g');
+    rendered = rendered.replace(pattern, String(value ?? ''));
+  }
+  return rendered;
+}
+
+async function buildProjectConfigBlock(cwd) {
   const playwrightProfileDir = resolve(cwd, '.codex', 'playwright-mcp-profile');
-  return [
-    PROJECT_CONFIG_BEGIN,
-    '[mcp_servers.playwright]',
-    'command = "npx"',
-    `args = ["-y", "@playwright/mcp@latest", "--user-data-dir=${playwrightProfileDir.replace(/\\/g, '/')}"]`,
-    '',
-    '[apps.playwright.tools.browser_navigate]',
-    'approval_mode = "approve"',
-    '',
-    '[apps.playwright.tools.browser_click]',
-    'approval_mode = "approve"',
-    '',
-    '[apps.playwright.tools.browser_type]',
-    'approval_mode = "approve"',
-    '',
-    '[apps.playwright.tools.browser_fill_form]',
-    'approval_mode = "approve"',
-    '',
-    '[apps.playwright.tools.browser_close]',
-    'approval_mode = "approve"',
-    PROJECT_CONFIG_END,
-    '',
-  ].join('\n');
+  const template = await readTextOrEmpty(BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH);
+  if (!template.trim()) {
+    throw new Error(
+      `bootstrap project config template missing or empty: ${BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH}`,
+    );
+  }
+
+  const userDataArg = tomlString(`--user-data-dir=${normalizePathForToml(playwrightProfileDir)}`);
+  const rendered = renderTemplate(template, {
+    PLAYWRIGHT_USER_DATA_ARG: userDataArg,
+  });
+  return rendered.endsWith('\n') ? rendered : `${rendered}\n`;
+}
+
+async function loadGuidedSetupPrompt() {
+  const template = await readTextOrEmpty(BOOTSTRAP_GUIDED_PROMPT_TEMPLATE_PATH);
+  const normalized = template
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+  if (!normalized) {
+    throw new Error(
+      `bootstrap guided prompt template missing or empty: ${BOOTSTRAP_GUIDED_PROMPT_TEMPLATE_PATH}`,
+    );
+  }
+  return normalized;
 }
 
 async function readTextOrEmpty(path) {
@@ -77,7 +96,7 @@ async function writeProjectConfigBlock(cwd) {
   const hasPlaywrightSections =
     current.includes('[mcp_servers.playwright]') ||
     current.includes('[apps.playwright.tools.browser_navigate]');
-  const block = buildProjectConfigBlock(cwd);
+  const block = await buildProjectConfigBlock(cwd);
 
   let next = current;
   if (current.includes(PROJECT_CONFIG_BEGIN) && current.includes(PROJECT_CONFIG_END)) {
@@ -293,15 +312,7 @@ async function ensureSetupDiscordSkillInstalled(cwd) {
   console.log(`[codex-everywhere] installed local skill at ${destinationResolved}`);
 }
 
-function launchGuidedSetupSession(options) {
-  const prompt = [
-    'Run $setup-discord and complete codex-everywhere Discord setup end-to-end.',
-    'Target server name: codex-everywhere-server.',
-    'Use default control channel (일반 in Korean locale, general in English locale).',
-    'If Discord requests login, CAPTCHA, or re-authentication, ask the user to complete it.',
-    'After setup, verify daemon is started and tell the user to type !ce-new in the control channel.',
-  ].join(' ');
-
+function launchGuidedSetupSession(options, prompt) {
   const args = ['--no-alt-screen'];
   if (options.model) {
     args.push('--model', options.model);
@@ -326,6 +337,7 @@ function launchGuidedSetupSession(options) {
 export async function runBootstrapSetupCommand(args = []) {
   const options = parseBootstrapArgs(args);
   const cwd = process.cwd();
+  const guidedPrompt = await loadGuidedSetupPrompt();
 
   if (!commandExists('codex')) {
     if (!options.installMissing || !tryInstallCodex() || !commandExists('codex')) {
@@ -355,5 +367,5 @@ export async function runBootstrapSetupCommand(args = []) {
     return;
   }
 
-  launchGuidedSetupSession(options);
+  launchGuidedSetupSession(options, guidedPrompt);
 }

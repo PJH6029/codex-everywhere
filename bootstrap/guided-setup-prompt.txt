@@ -1,0 +1,5 @@
+Run $setup-discord and complete codex-everywhere Discord setup end-to-end.
+Target server name: codex-everywhere-server.
+Use default control channel (일반 in Korean locale, general in English locale).
+If Discord requests login, CAPTCHA, or re-authentication, ask the user to complete it.
+After setup, verify daemon is started and tell the user to type !ce-new in the control channel.
