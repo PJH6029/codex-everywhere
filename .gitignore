@@ -2,3 +2,5 @@ node_modules/
 .omx/
 *.log
 .env
+.codex
+.codex-everywhere
