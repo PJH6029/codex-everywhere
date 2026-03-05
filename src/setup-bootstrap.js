@@ -43,6 +43,10 @@ function resolveLocalSkillFile(cwd) {
   return resolve(resolveLocalSkillDir(cwd), 'SKILL.md');
 }
 
+function resolvePlaywrightProfileDir(cwd) {
+  return resolve(cwd, '.codex', 'playwright-mcp-profile');
+}
+
 function renderTemplate(template, replacements) {
   let rendered = String(template || '');
   for (const [key, value] of Object.entries(replacements || {})) {
@@ -53,7 +57,7 @@ function renderTemplate(template, replacements) {
 }
 
 async function buildProjectConfigBlock(cwd) {
-  const playwrightProfileDir = resolve(cwd, '.codex', 'playwright-mcp-profile');
+  const playwrightProfileDir = resolvePlaywrightProfileDir(cwd);
   const template = await readTextOrEmpty(BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH);
   if (!template.trim()) {
     throw new Error(
@@ -66,6 +70,12 @@ async function buildProjectConfigBlock(cwd) {
     PLAYWRIGHT_USER_DATA_ARG: userDataArg,
   });
   return rendered.endsWith('\n') ? rendered : `${rendered}\n`;
+}
+
+async function ensurePlaywrightProfileDir(cwd) {
+  const profileDir = resolvePlaywrightProfileDir(cwd);
+  await mkdir(profileDir, { recursive: true });
+  console.log(`[codex-everywhere] ensured playwright profile dir: ${profileDir}`);
 }
 
 async function loadGuidedSetupPrompt() {
@@ -353,6 +363,7 @@ export async function runBootstrapSetupCommand(args = []) {
     }
   }
 
+  await ensurePlaywrightProfileDir(cwd);
   await writeProjectConfigBlock(cwd);
   await ensureProjectTrusted(cwd);
   await ensureSetupDiscordSkillInstalled(cwd);

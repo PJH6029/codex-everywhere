@@ -85,6 +85,9 @@ Even with bootstrap, user interaction is still required for:
 
 `codex-everywhere setup bootstrap`:
 
+- `./.codex/playwright-mcp-profile/`
+  - Created (directory).
+  - Used as Playwright MCP browser profile storage.
 - `./.codex/config.toml`
   - Created or updated.
   - Writes/replaces the `# BEGIN/END codex-everywhere bootstrap config` block for Playwright MCP/tool approval defaults.
