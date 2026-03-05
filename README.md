@@ -1,48 +1,11 @@
 # codex-everywhere
 
-Minimal Codex add-on focused on messenger interaction.
-
-`codex-everywhere` runs Codex in a tmux pane, sends Discord bot notifications, accepts Discord replies, and injects those replies back into the Codex session.
-
-It also scans for Codex permission prompts (approval UI) and forwards them to Discord so user decisions can be sent back to Codex.
+Run Codex in tmux, bridge notifications/replies through Discord, and manage multi-session channels from the CLI.
 
 ## Quickstart
 
-1. Clone and enter repo:
-
-```bash
-git clone https://github.com/PJH6029/codex-everywhere.git
-cd codex-everywhere
-```
-
-2. Install CLI locally:
-
-```bash
-npm link
-```
-
-3. Start Codex Everywhere:
-
-```bash
-codex-everywhere
-```
-
-4. In Codex terminal, grant full access for setup:
-   - Run `/permissions` and allow full access.
-
-5. Activate setup skill:
-   - Run `$setup-discord`
-
-6. Complete required manual auth steps when prompted:
-   - Solve CAPTCHA if Discord shows it.
-   - Re-authenticate if Discord asks again during bot token generation.
-   - Send one normal message in control channel for auto user recognition.
-
-After setup, type `!ce-new` in control channel.
-
-## One-Command Bootstrap
-
-If you want to delegate setup prep + guided setup launch to one command:
+Install Playwright MCP Bridge first (required for browser automation in setup):
+- https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm
 
 ```bash
 git clone https://github.com/PJH6029/codex-everywhere.git
@@ -51,445 +14,178 @@ npm link
 codex-everywhere setup bootstrap
 ```
 
-Or, if you already cloned/linked:
+During guided setup, complete any requested Discord login/CAPTCHA/re-auth steps.
 
-```bash
-codex-everywhere setup bootstrap
-```
+After setup completes, type `!ce-new` in your control channel.
 
-What it does:
+## What It Does
 
-- Verifies `codex` and `tmux` are installed (attempts auto-install if missing).
-- Writes project-scoped Codex config at `.codex/config.toml` with:
-  - `mcp_servers.playwright` (`npx @playwright/mcp@latest`)
-  - `apps.playwright.tools.*.approval_mode = "approve"` for core browser actions
-- Marks current project as trusted in `~/.codex/config.toml` so project config is loaded.
-- Installs local `setup-discord` skill into `./.agents/skills/setup-discord/SKILL.md` (project-local, not global).
-- Launches Codex with a guided setup prompt that runs `$setup-discord` and sets reasoning effort to `xhigh` for initialization.
-- Uses initialization assets from `./bootstrap/` (project config template + guided setup prompt template).
+- Runs Codex in tmux.
+- Sends Codex events to Discord (session start/end, turn complete, prompts).
+- Accepts Discord replies and injects them into Codex.
+- Bridges Codex approval prompts to Discord (`y`, `p`, `n` flow).
+- Manages one tmux/Codex session per provisioned Discord channel.
 
-Useful flags:
+## Detailed Setup
 
-- `--no-install`: do not auto-install missing prerequisites.
-- `--no-launch`: only prepare prerequisites/skill, do not launch Codex.
-- `--model <name>`: launch setup with a specific model.
-- `--reasoning-effort <level>` (or `--effort <level>`): override bootstrap reasoning effort (default: `xhigh`).
-- `--unsafe`: launch Codex with `--dangerously-bypass-approvals-and-sandbox` (use carefully).
-
-Even with bootstrap, user interaction is still required for:
-
-- `/permissions` decision
-- Discord CAPTCHA/anti-bot checks
-- Discord re-auth prompts for token reveal/generation
-
-### Files Written by Setup Commands
-
-`codex-everywhere setup bootstrap`:
-
-- `./.codex/playwright-mcp-profile/`
-  - Created (directory).
-  - Used as Playwright MCP browser profile storage.
-- `./.codex/config.toml`
-  - Created or updated.
-  - Writes/replaces the `# BEGIN/END codex-everywhere bootstrap config` block for Playwright MCP/tool approval defaults.
-- `~/.codex/config.toml`
-  - Created or updated.
-  - Adds/updates trust for the current project path (`projects."<abs-path>".trust_level = "trusted"`).
-- `./.agents/skills/setup-discord/SKILL.md`
-  - Created only if missing.
-  - Uses repository-local skill location (not global).
-
-`codex-everywhere setup discord`:
-
-- `~/.codex-everywhere/config.json` by default (or `--config-path <path>` if provided)
-  - Created or updated.
-  - Merges notification/reply/provisioning settings under `notifications`.
-
-## Features
-
-- Starts Codex in tmux via `codex-everywhere`
-- Injects Codex notify hook at runtime (`codex -c notify=[...]`)
-- Sends session start/end + turn response notifications to Discord bot channel
-- Two-way chat by replying to bot messages
-- Terminal-to-Discord sync: prompts typed directly in tmux are posted to Discord
-- Approval bridge: detects Codex permission prompts and asks user for `y` / `p` / `n` on Discord
-- Multi-channel mode: each Discord channel can own one Codex session
-  - New channels that match provisioning filters auto-start a detached Codex session
-  - Messages posted in that channel route directly to that session
-  - New channels start with a default `new-channel`-style name and are auto-renamed from conversation context
-- Native `codex-everywhere` env/config keys
-
-## Prerequisites
+### Prerequisites
 
 - Node.js 20+
 - `tmux`
-- `codex` CLI (`npm i -g @openai/codex`)
-- Discord bot token + channel ID
-- Discord bot permissions in your server (see Discord setup below)
+- Codex CLI (`npm i -g @openai/codex`)
+- Chrome/Edge/Chromium with Playwright MCP Bridge extension installed
+- Discord bot token and permissions in your server
 
-## Install
+### Bootstrap Flow (`setup bootstrap`)
 
-```bash
-cd ~/code/codex-everywhere
-npm link
-```
+`codex-everywhere setup bootstrap` (alias: `setup auto`) does the following:
 
-Then run:
+1. Verifies `codex` and `tmux` (auto-installs if missing unless disabled).
+2. Writes project `.codex/config.toml` with Playwright MCP extension config and browser tool approvals.
+3. Marks this project as trusted in `~/.codex/config.toml`.
+4. Installs local setup skill at `./.agents/skills/setup-discord/SKILL.md` if missing.
+5. Launches Codex with guided setup prompt and default reasoning effort `xhigh`.
 
-```bash
-codex-everywhere
-```
+Required manual actions still include:
+- Playwright extension install / first connection approval
+- `/permissions` approval in Codex
+- Discord CAPTCHA / re-auth flows
 
-Pass any Codex args through:
+### Manual Discord Setup (`setup discord`)
 
-```bash
-codex-everywhere -m gpt-5.3-codex --full-auto
-```
-
-## Fast Setup (Codex Skill)
-
-This repo includes a local setup skill:
-
-- `.agents/skills/setup-discord/SKILL.md`
-
-Recommended flow:
-
-1. `npm link`
-2. `codex-everywhere`
-3. Run `$setup-discord` in Codex (or tell Codex to use local `setup-discord` skill)
-4. Skill creates/uses server `codex-everywhere-server` and default control channel (`일반`/`general`)
-5. In Discord control channel, type `!ce-new`
-
-Note: guild/server creation itself is performed through Discord Web UI automation (Playwright-assisted), not via bot REST API.
-
-### User Actions During Automated Setup
-
-During `$setup-discord`, the user still has a few required actions:
-
-1. Grant Codex full access permission before setup:
-   - In Codex terminal, run `/permissions` and allow full access for setup.
-   - Recommended: keep the setup visible and watch live while the agent runs browser steps.
-2. Complete CAPTCHA/anti-bot checks when Discord prompts:
-   - The agent cannot bypass CAPTCHA; user must complete it manually.
-3. Re-authenticate when generating/revealing bot token:
-   - Discord may request an additional login/verification for bot token operations.
-4. Send one normal message in the control channel:
-   - Required for automatic authorized-user discovery (`--authorized-user-id auto`).
-
-## Discord Configuration
-
-### Discord Developer Portal + Server Setup (Required)
-
-1. Create or open your Discord application and bot in the Developer Portal.
-2. In `Bot` settings:
-   - Enable **Message Content Intent**.
-3. In `OAuth2 > URL Generator`:
-   - Scopes: `bot`
-   - Bot permissions (minimum):
-     - `View Channels`
-     - `Read Message History`
-     - `Send Messages`
-     - `Add Reactions`
-   - Additional permission for channel auto-cleanup on terminate:
-     - `Manage Channels`
-4. Re-invite the bot with updated permissions if needed.
-5. In Discord server/channel/category permission overrides:
-   - Make sure the bot role is not denied the permissions above.
-   - If using category-based channel provisioning, set permissions on that category too.
-
-Without **Message Content Intent**, plain channel messages may appear empty to the bot.
-Without **Manage Channels**, session termination works but channel deletion fails with `discord_http_403`.
-
-### Runtime Config (Env Vars)
-
-Use `codex-everywhere` env vars:
-
-```bash
-export CODEX_EVERYWHERE_DISCORD_BOT_TOKEN="<discord-bot-token>"
-export CODEX_EVERYWHERE_DISCORD_CHANNEL="<discord-channel-id>"
-```
-
-To enable reply injection auth:
-
-```bash
-export CODEX_EVERYWHERE_REPLY_ENABLED="true"
-export CODEX_EVERYWHERE_REPLY_DISCORD_USER_IDS="123456789012345678"
-```
-
-Optional:
-
-```bash
-export CODEX_EVERYWHERE_DISCORD_MENTION="<@123456789012345678>"
-export CODEX_EVERYWHERE_REPLY_POLL_INTERVAL_MS="3000"
-export CODEX_EVERYWHERE_REPLY_RATE_LIMIT="10"
-export CODEX_EVERYWHERE_REPLY_INCLUDE_PREFIX="true"
-export CODEX_EVERYWHERE_REPLY_AUTO_CONTINUE_ON_DENY="true"
-# Optional custom instruction injected after deny (`n`)
-export CODEX_EVERYWHERE_REPLY_ON_DENY_MESSAGE="User denied this command. Continue without running it and choose a safe alternative."
-
-# Optional channel provisioning controls (new channel => new Codex session)
-export CODEX_EVERYWHERE_DISCORD_PROVISION_ENABLED="true"
-export CODEX_EVERYWHERE_DISCORD_PROVISION_PREFIX="codex-"
-export CODEX_EVERYWHERE_DISCORD_PROVISION_CATEGORY_ID=""
-export CODEX_EVERYWHERE_DISCORD_PROVISION_POLL_INTERVAL_MS="3000"
-export CODEX_EVERYWHERE_DISCORD_PROVISION_MAX_CHANNELS="40"
-```
-
-### One-shot setup command (recommended)
-
-Instead of manual env/config editing:
+If you want to skip guided bootstrap:
 
 ```bash
 codex-everywhere setup discord \
-  --bot-token "<DISCORD_BOT_TOKEN>" \
+  --bot-token "$BOT" \
   --guild-name "codex-everywhere-server" \
   --authorized-user-id auto
 ```
 
-This resolves control channel automatically from default names (`일반` or `general`).
-
-If you already know channel id, explicit channel mode is still supported:
-
-```bash
-codex-everywhere setup discord \
-  --bot-token "<DISCORD_BOT_TOKEN>" \
-  --control-channel-id "<CONTROL_CHANNEL_ID>" \
-  --authorized-user-id auto
-```
-
-`--authorized-user-id auto` discovers the latest non-bot author in control channel.
-If auto-discovery fails, pass explicit user id:
-
-```bash
-codex-everywhere setup discord \
-  --bot-token "<DISCORD_BOT_TOKEN>" \
-  --guild-name "codex-everywhere-server" \
-  --authorized-user-id "<YOUR_USER_ID>"
-```
-
-`CODEX_EVERYWHERE_REPLY_INCLUDE_PREFIX="true"` is recommended.  
-It helps avoid echo loops by tagging Discord-injected prompts as `[reply:discord]`.
-
-Recommended restart after changing env/config:
+Then start daemon and validate:
 
 ```bash
 codex-everywhere daemon restart
 ```
 
-Optional: enable verbose Discord diagnostics (session id, tmux session/pane, injection target):
+In Discord control channel:
 
-```bash
-codex-everywhere daemon restart --debug
+```text
+!ce-new
 ```
 
-Return to minimal user-facing messages:
+## Command Reference
+
+### Main
 
 ```bash
-codex-everywhere daemon restart --no-debug
+codex-everywhere [codex args...]
 ```
 
-You can also set the same values in `~/.codex-everywhere/config.json`:
+Pass-through args are forwarded to Codex launch.
 
-```json
-{
-  "notifications": {
-    "enabled": true,
-    "events": {
-      "user-input": { "enabled": true }
-    },
-    "discord-bot": {
-      "enabled": true,
-      "botToken": "<token>",
-      "channelId": "<channel-id>",
-      "mention": "<@123456789012345678>",
-      "provisioning": {
-        "enabled": true,
-        "channelPrefix": "codex-",
-        "categoryId": "",
-        "pollIntervalMs": 3000,
-        "maxManagedChannels": 40
-      }
-    },
-    "reply": {
-      "enabled": true,
-      "authorizedDiscordUserIds": ["123456789012345678"],
-      "pollIntervalMs": 3000,
-      "rateLimitPerMinute": 10,
-      "includePrefix": true,
-      "autoContinueOnDeny": true,
-      "onDenyMessage": "User denied this command. Continue without running it and choose a safe alternative.",
-      "maxMessageLength": 500
-    }
-  }
-}
-```
-
-## Daemon Control
+### `setup bootstrap` options
 
 ```bash
-codex-everywhere daemon status
-codex-everywhere daemon start
-codex-everywhere daemon restart
-codex-everywhere daemon start --debug
-codex-everywhere daemon start --no-debug
+codex-everywhere setup bootstrap [options]
+```
+
+- `--no-install`: do not auto-install missing prerequisites.
+- `--no-launch`: prepare only; do not launch Codex.
+- `--model <name>` or `-m <name>`: model override for guided session.
+- `--reasoning-effort <level>` or `--effort <level>`: override bootstrap effort (default `xhigh`).
+- `--unsafe`: launch Codex with `--dangerously-bypass-approvals-and-sandbox`.
+
+### `setup discord` options
+
+```bash
+codex-everywhere setup discord --bot-token <token> [--control-channel-id <id> | --guild-name <name>] [options]
+```
+
+Core options:
+- `--control-channel-id <id>`
+- `--guild-id <id>`
+- `--guild-name <name>` (default `codex-everywhere-server`)
+- `--control-channel-name <name>` (auto default: `일반` / `general`)
+- `--authorized-user-id <id|auto>` (default `auto`)
+- `--authorized-user-ids <id,id,...>`
+- `--mention-user-id <id>`
+- `--provision-enabled <true|false>` (default `true`)
+- `--provision-prefix <prefix>` (default `codex-`)
+- `--provision-category-id <id>`
+- `--poll-interval-ms <int>` (default `3000`)
+- `--rate-limit-per-minute <int>` (default `10`)
+- `--max-message-length <int>` (default `500`)
+- `--max-managed-channels <int>` (default `40`)
+- `--config-path <path>` (default `~/.codex-everywhere/config.json`)
+- `--skip-test-message`
+
+Use `codex-everywhere setup discord --help` for current examples.
+
+### Daemon commands
+
+```bash
+codex-everywhere daemon start [--debug|--no-debug]
+codex-everywhere daemon restart [--debug|--no-debug]
 codex-everywhere daemon stop
+codex-everywhere daemon status
 ```
 
-If `daemon start` reports a conflicting listener, stop old legacy listeners first (safety race check only):
+### Session commands
 
 ```bash
-pkill -f 'oh-my-codex/dist/notifications/reply-listener.js'
+codex-everywhere sessions list [--all]
+codex-everywhere sessions attach [selector] [--pane] [--lines <n>] [--all]
+codex-everywhere sessions terminate [selector] [--all] [--wait <sec>] [--force]
 ```
 
-## Session Access (From Desktop)
+## Architecture
 
-List active sessions:
+High-level flow:
+
+```text
+Discord <-> reply-daemon.js <-> tmux pane <-> run-codex.js <-> Codex
+                               \-> notify-hook.js / notify.js
+```
+
+Key modules:
+- `src/cli.js`: command router and top-level orchestration.
+- `src/run-codex.js`: launches Codex process in managed session.
+- `src/reply-daemon.js`: reply polling, approval bridge, channel provisioning.
+- `src/discord.js`: Discord REST helpers.
+- `src/tmux.js`: tmux session/pane operations.
+- `src/setup-bootstrap.js`: one-command bootstrap preparation and guided launch.
+- `src/setup-discord.js`: writes Discord/reply/provision config.
+- `src/config.js`: merges env vars + config file.
+- `src/active-sessions.js`: managed session registry.
+
+## Files and State
+
+- Project files written by bootstrap:
+  - `./.codex/config.toml`
+  - `./.agents/skills/setup-discord/SKILL.md` (if missing)
+- Global Codex trust:
+  - `~/.codex/config.toml`
+- codex-everywhere runtime/config:
+  - `~/.codex-everywhere/config.json`
+  - `~/.codex-everywhere/state/*`
+  - `~/.codex-everywhere/logs/*`
+
+## Troubleshooting
+
+- `guild not found for --guild-name ...`:
+  - Create/select the guild first, or pass `--control-channel-id` / `--guild-id`.
+- `failed to discover authorized user id automatically`:
+  - Send one normal message in control channel, then rerun setup.
+- Discord messages look empty:
+  - Enable **Message Content Intent** in Discord bot settings.
+- Channel deletion fails with permission error:
+  - Grant bot `Manage Channels` permission.
+- Browser automation cannot connect:
+  - Confirm Playwright MCP Bridge extension is installed in the browser profile you are using.
+
+## Development
 
 ```bash
-codex-everywhere sessions list
+npm run check
 ```
-
-`--all` is retained for backward compatibility and currently behaves the same:
-
-```bash
-codex-everywhere sessions list --all
-```
-
-Attach to a session by selector (index, channel ID, session ID, pane ID, or tmux session name):
-
-```bash
-codex-everywhere sessions attach 1
-codex-everywhere sessions attach 1478000836398551083
-```
-
-Open live pane mode instead of tmux attach:
-
-```bash
-codex-everywhere sessions attach 1 --pane
-codex-everywhere sessions attach 1 --pane --lines 160
-```
-
-Terminate a session safely (graceful `/exit` first):
-
-```bash
-codex-everywhere sessions terminate 1
-```
-
-If graceful exit stalls, force-kill the tmux target after a timeout:
-
-```bash
-codex-everywhere sessions terminate 1 --wait 8 --force
-```
-
-For channel-provisioned sessions, `sessions terminate` also deletes the bound Discord channel after termination.
-
-## Permission Approval Flow
-
-When Codex asks for command approval, daemon sends a Discord message. Reply to that message with:
-
-- `y` for approve once
-- `p` for approve this prefix
-- `n` for deny
-
-The decision is injected into the tmux pane.
-When denying with `n`, codex-everywhere also injects a short follow-up instruction so Codex continues without stalling.
-
-## Channel-per-session Mode
-
-The configured `notifications.discord-bot.channelId` acts as the control channel and guild anchor.
-
-- Existing matching channels are baselined when daemon starts.
-- Running `codex-everywhere` from terminal also provisions a per-session Discord channel by default (when provisioning is enabled).
-- Creating a new matching text channel (same guild, optional prefix/category filters) auto-starts a new detached Codex session bound to that channel.
-- Any authorized user message in that channel is injected into its bound Codex session.
-- Reply-threading still works; channel routing is used as fallback when message references are absent.
-- Control channel is always polled so orchestration commands work even while other sessions are running.
-
-### Control-Channel Session Create Command
-
-In the control channel, send one of:
-
-- `!ce-help`
-- `!ce-new`
-- `!ce-new <name>`
-- `!ce-new --cwd ~/code/my-project`
-- `!ce-new <name> --cwd ~/code/my-project`
-- `!ce-new <name> --approval on-request --sandbox workspace-write`
-- `!ce-new <name> --full-auto`
-
-Behavior:
-
-- `!ce-help` prints control-channel usage and examples.
-- Creates a new text channel in the same guild (and configured category if set).
-- Starts a new Codex session bound to that channel and directory.
-- New channel names default to `new-channel` style and are made unique automatically.
-- After early conversation messages, codex-everywhere auto-renames the channel to a topic-like slug (for example, `codex-print-hello-world`).
-- Sends a channel mention + link in control channel so you can jump there quickly.
-- Optional launch policy arguments:
-  - `--approval` / `--ask-for-approval` / `-a`: `untrusted | on-request | on-failure | never`
-  - `--sandbox` / `-s`: `read-only | workspace-write | danger-full-access`
-  - `--full-auto`: shorthand for `--approval on-request --sandbox workspace-write` (unless explicitly overridden)
-
-### Discord-side Termination Command
-
-To terminate from Discord directly, send one of these exact messages in the session channel:
-
-- `!ce-exit`
-- `!ce-terminate`
-- `!codex-exit`
-- `!codex-terminate`
-- `/exit` (alias; may conflict with Discord slash-command UX, so `!ce-exit` is recommended)
-
-The daemon safely terminates the bound Codex session (graceful `/exit` first, force fallback if needed).  
-If the channel is a provisioned per-session channel, the channel is deleted after termination.
-After channel deletion, codex-everywhere posts a handoff message in the control channel.
-
-### Session Metadata Command
-
-In a session channel, send:
-
-- `!ce-help`
-- `!ce-meta`
-
-- `!ce-help` prints session-channel usage.
-- `!ce-meta` reports bound session metadata (session id, channel id, routing key, tmux session, pane id, project path, timestamps) even when debug mode is off.
-
-### Session Policy Command (Provisioned Channel)
-
-In a session channel, send one of:
-
-- `!ce-help`
-- `!ce-perm --approval on-request --sandbox workspace-write`
-- `!ce-perm --full-auto`
-- `!ce-perm --default`
-
-Behavior:
-
-- Updates launch policy for that channel's bound session.
-- Restarts Codex in the same Discord channel with new launch args.
-- Supported arguments:
-  - `--approval` / `--ask-for-approval` / `-a`: `untrusted | on-request | on-failure | never`
-  - `--sandbox` / `-s`: `read-only | workspace-write | danger-full-access`
-  - `--full-auto`: shorthand for `--approval on-request --sandbox workspace-write` (unless explicitly overridden)
-  - `--default`: restart without explicit launch policy args (Codex defaults/config apply)
-
-If plain channel messages are injected as empty content, enable **Message Content Intent** for the bot in the Discord Developer Portal.  
-Replies/mentions may still work without it, but plain text command parsing is unreliable when that intent is disabled.
-
-## Discord Troubleshooting
-
-- `discord_http_401`:
-  - Bot token is invalid/expired, or wrong token is loaded.
-- `discord_http_403_*missing_permissions*` on channel delete:
-  - Grant bot role `Manage Channels` in server and channel/category overrides.
-- Plain channel messages are treated as empty:
-  - Enable **Message Content Intent**.
-  - Restart daemon after intent/permission updates.
-- `!ce-exit` did nothing:
-  - Ensure message came from a user in `CODEX_EVERYWHERE_REPLY_DISCORD_USER_IDS`.
-  - Use exact command text (or reply/mention with the command).
-
-## Logs and State
-
-- Project logs: `<project>/.codex-everywhere/logs/codex-everywhere-turns-YYYY-MM-DD.jsonl`
-- Global daemon/session state: `~/.codex-everywhere/state/`

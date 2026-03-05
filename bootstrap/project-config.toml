@@ -1,7 +1,7 @@
 # BEGIN codex-everywhere bootstrap config
 [mcp_servers.playwright]
 command = "npx"
-args = ["-y", "@playwright/mcp@latest", {{PLAYWRIGHT_USER_DATA_ARG}}]
+args = ["-y", "@playwright/mcp@latest", "--extension"]
 
 [apps.playwright.tools.browser_navigate]
 approval_mode = "approve"

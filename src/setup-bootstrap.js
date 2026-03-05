@@ -21,6 +21,8 @@ const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'conf
 const PROJECT_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap config';
 const PROJECT_CONFIG_END = '# END codex-everywhere bootstrap config';
 const BOOTSTRAP_REASONING_EFFORT = 'xhigh';
+const PLAYWRIGHT_EXTENSION_WEBSTORE_URL =
+  'https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm';
 
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -32,10 +34,6 @@ function tomlString(value) {
     .replace(/"/g, '\\"')}"`;
 }
 
-function normalizePathForToml(value) {
-  return String(value || '').replace(/\\/g, '/');
-}
-
 function resolveLocalSkillDir(cwd) {
   return resolve(cwd, '.agents', 'skills', 'setup-discord');
 }
@@ -44,39 +42,14 @@ function resolveLocalSkillFile(cwd) {
   return resolve(resolveLocalSkillDir(cwd), 'SKILL.md');
 }
 
-function resolvePlaywrightProfileDir(cwd) {
-  return resolve(cwd, '.codex', 'playwright-mcp-profile');
-}
-
-function renderTemplate(template, replacements) {
-  let rendered = String(template || '');
-  for (const [key, value] of Object.entries(replacements || {})) {
-    const pattern = new RegExp(`\\{\\{${escapeRegExp(key)}\\}\\}`, 'g');
-    rendered = rendered.replace(pattern, String(value ?? ''));
-  }
-  return rendered;
-}
-
-async function buildProjectConfigBlock(cwd) {
-  const playwrightProfileDir = resolvePlaywrightProfileDir(cwd);
+async function buildProjectConfigBlock() {
   const template = await readTextOrEmpty(BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH);
   if (!template.trim()) {
     throw new Error(
       `bootstrap project config template missing or empty: ${BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH}`,
     );
   }
-
-  const userDataArg = tomlString(`--user-data-dir=${normalizePathForToml(playwrightProfileDir)}`);
-  const rendered = renderTemplate(template, {
-    PLAYWRIGHT_USER_DATA_ARG: userDataArg,
-  });
-  return rendered.endsWith('\n') ? rendered : `${rendered}\n`;
-}
-
-async function ensurePlaywrightProfileDir(cwd) {
-  const profileDir = resolvePlaywrightProfileDir(cwd);
-  await mkdir(profileDir, { recursive: true });
-  console.log(`[codex-everywhere] ensured playwright profile dir: ${profileDir}`);
+  return template.endsWith('\n') ? template : `${template}\n`;
 }
 
 async function loadGuidedSetupPrompt() {
@@ -102,12 +75,12 @@ async function readTextOrEmpty(path) {
   }
 }
 
-async function writeProjectConfigBlock(cwd) {
+async function writeProjectConfigBlock() {
   const current = await readTextOrEmpty(PROJECT_CODEX_CONFIG_PATH);
   const hasPlaywrightSections =
     current.includes('[mcp_servers.playwright]') ||
     current.includes('[apps.playwright.tools.browser_navigate]');
-  const block = await buildProjectConfigBlock(cwd);
+  const block = await buildProjectConfigBlock();
 
   let next = current;
   if (current.includes(PROJECT_CONFIG_BEGIN) && current.includes(PROJECT_CONFIG_END)) {
@@ -399,14 +372,14 @@ export async function runBootstrapSetupCommand(args = []) {
     }
   }
 
-  await ensurePlaywrightProfileDir(cwd);
-  await writeProjectConfigBlock(cwd);
+  await writeProjectConfigBlock();
   await ensureProjectTrusted(cwd);
   await ensureSetupDiscordSkillInstalled(cwd);
 
   console.log('[codex-everywhere] bootstrap preparation complete.');
-  console.log('[codex-everywhere] project-scoped Codex config for playwright MCP + tool approvals is ready.');
-  console.log('[codex-everywhere] user actions still required during setup: /permissions approval, CAPTCHA, and Discord re-auth prompts.');
+  console.log('[codex-everywhere] project-scoped Codex config for Playwright MCP extension + tool approvals is ready.');
+  console.log(`[codex-everywhere] prerequisite: install Playwright MCP Bridge extension first: ${PLAYWRIGHT_EXTENSION_WEBSTORE_URL}`);
+  console.log('[codex-everywhere] user actions still required during setup: Playwright extension install/connection approval, /permissions approval, CAPTCHA, and Discord re-auth prompts.');
 
   if (!options.launch) {
     console.log('[codex-everywhere] launch skipped (`--no-launch`).');
