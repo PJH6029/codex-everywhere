@@ -40,6 +40,34 @@ codex-everywhere
 
 After setup, type `!ce-new` in control channel.
 
+## One-Command Bootstrap
+
+If you want to delegate setup prep + guided setup launch to one command:
+
+```bash
+codex-everywhere setup bootstrap
+```
+
+What it does:
+
+- Verifies `codex` and `tmux` are installed (attempts auto-install if missing).
+- Ensures Playwright MCP is registered in Codex (`playwright`).
+- Installs local `setup-discord` skill into `~/.codex/skills/setup-discord/SKILL.md`.
+- Launches Codex with a guided setup prompt that runs `$setup-discord`.
+
+Useful flags:
+
+- `--no-install`: do not auto-install missing prerequisites.
+- `--no-launch`: only prepare prerequisites/skill, do not launch Codex.
+- `--model <name>`: launch setup with a specific model.
+- `--unsafe`: launch Codex with `--dangerously-bypass-approvals-and-sandbox` (use carefully).
+
+Even with bootstrap, user interaction is still required for:
+
+- `/permissions` decision
+- Discord CAPTCHA/anti-bot checks
+- Discord re-auth prompts for token reveal/generation
+
 ## Features
 
 - Starts Codex in tmux via `codex-everywhere`
@@ -344,6 +372,7 @@ The configured `notifications.discord-bot.channelId` acts as the control channel
 
 In the control channel, send one of:
 
+- `!ce-help`
 - `!ce-new`
 - `!ce-new <name>`
 - `!ce-new --cwd ~/code/my-project`
@@ -353,6 +382,7 @@ In the control channel, send one of:
 
 Behavior:
 
+- `!ce-help` prints control-channel usage and examples.
 - Creates a new text channel in the same guild (and configured category if set).
 - Starts a new Codex session bound to that channel and directory.
 - New channel names default to `new-channel` style and are made unique automatically.
@@ -381,14 +411,17 @@ After channel deletion, codex-everywhere posts a handoff message in the control 
 
 In a session channel, send:
 
+- `!ce-help`
 - `!ce-meta`
 
-This reports bound session metadata (session id, channel id, routing key, tmux session, pane id, project path, timestamps) even when debug mode is off.
+- `!ce-help` prints session-channel usage.
+- `!ce-meta` reports bound session metadata (session id, channel id, routing key, tmux session, pane id, project path, timestamps) even when debug mode is off.
 
 ### Session Policy Command (Provisioned Channel)
 
 In a session channel, send one of:
 
+- `!ce-help`
 - `!ce-perm --approval on-request --sandbox workspace-write`
 - `!ce-perm --full-auto`
 - `!ce-perm --default`

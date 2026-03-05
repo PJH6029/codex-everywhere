@@ -15,6 +15,7 @@ import {
 import { notifyEvent } from './notify.js';
 import { startDaemon, stopDaemon, daemonStatus } from './reply-daemon.js';
 import { runDiscordSetupCommand } from './setup-discord.js';
+import { runBootstrapSetupCommand } from './setup-bootstrap.js';
 import {
   listActiveSessions,
   pruneActiveSessions,
@@ -42,6 +43,7 @@ const HELP = `codex-everywhere
 Usage:
   codex-everywhere [codex args...]
   codex-everywhere setup discord [options]
+  codex-everywhere setup bootstrap [options]
   codex-everywhere daemon start [--debug|--no-debug]
   codex-everywhere daemon restart [--debug|--no-debug]
   codex-everywhere daemon <stop|status>
@@ -57,6 +59,7 @@ Behavior:
   - Lists, opens, and terminates tmux sessions created from Discord channels
   - Deletes per-session Discord channels when those managed sessions are terminated
   - Supports one-shot Discord config setup (\`setup discord\`)
+  - Supports one-command guided bootstrap (\`setup bootstrap\`)
 `;
 
 function codexInstalled() {
@@ -817,7 +820,11 @@ async function handleSetupCommand(args) {
     await runDiscordSetupCommand(args.slice(sub ? 1 : 0));
     return;
   }
-  throw new Error('unknown setup command. Use `setup discord`');
+  if (sub === 'bootstrap' || sub === 'auto') {
+    await runBootstrapSetupCommand(args.slice(1));
+    return;
+  }
+  throw new Error('unknown setup command. Use `setup discord` or `setup bootstrap`');
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -443,6 +443,10 @@ const META_MESSAGE_COMMANDS = new Set([
   '!ce-meta',
   '!codex-meta',
 ]);
+const HELP_MESSAGE_COMMANDS = new Set([
+  '!ce-help',
+  '!codex-help',
+]);
 const POLICY_MESSAGE_COMMANDS = new Set([
   '!ce-perm',
   '!ce-permission',
@@ -557,6 +561,9 @@ function parseLifecycleCommand(text) {
     .trim()
     .toLowerCase();
   if (!normalized) return null;
+  if (HELP_MESSAGE_COMMANDS.has(normalized)) {
+    return { kind: 'session-help' };
+  }
   if (TERMINATE_MESSAGE_COMMANDS.has(normalized)) {
     return { kind: 'terminate-session' };
   }
@@ -1418,6 +1425,57 @@ function describeLaunchPolicy(command) {
   return `mode=${mode}, approval=${approval}, sandbox=${sandbox}`;
 }
 
+function formatChannelHelp(config, isControlChannel, hasBoundSession) {
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  const controlChannelText = controlChannelId ? `<#${controlChannelId}>` : 'the control channel';
+  const sharedTail = [
+    '',
+    'Approval policy values: `untrusted | on-request | on-failure | never`',
+    'Sandbox mode values: `read-only | workspace-write | danger-full-access`',
+  ];
+
+  if (isControlChannel) {
+    return [
+      '# codex-everywhere Help',
+      '',
+      'This is the control channel. Create/manage Codex sessions from here.',
+      '',
+      'Commands:',
+      '- `!ce-new [name] [--cwd <path>] [--approval <policy>] [--sandbox <mode>] [--full-auto]`',
+      '- `!ce-help`',
+      '',
+      'Examples:',
+      '- `!ce-new`',
+      '- `!ce-new bugfix --cwd ~/code/my-project`',
+      '- `!ce-new docs --approval on-request --sandbox workspace-write`',
+      ...sharedTail,
+      '',
+      `Use session-channel commands inside provisioned channels: \`!ce-meta\`, \`!ce-perm ...\`, \`!ce-exit\`, \`!ce-help\`.`,
+    ].join('\n');
+  }
+
+  return [
+    '# codex-everywhere Help',
+    '',
+    hasBoundSession
+      ? 'This channel is bound to a Codex session.'
+      : 'No active Codex session is currently bound to this channel.',
+    '',
+    'Commands in this channel:',
+    '- `!ce-help`',
+    '- `!ce-meta`',
+    '- `!ce-perm --approval <policy> --sandbox <mode>`',
+    '- `!ce-perm --full-auto`',
+    '- `!ce-perm --default`',
+    '- `!ce-exit`',
+    '',
+    'Any normal message is forwarded to Codex.',
+    '',
+    `To create a new channel/session, use \`!ce-new\` in ${controlChannelText}.`,
+    ...sharedTail,
+  ].join('\n');
+}
+
 async function restartSessionWithLaunchPolicy(session, config, command) {
   const paneId = String(session?.paneId || '');
   const channelId = String(session?.channelId || '').trim();
@@ -1832,6 +1890,26 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
     }
 
     const lifecycle = parseLifecycleCommand(userContent);
+    if (lifecycle?.kind === 'session-help') {
+      if (!limiter.canProceed()) {
+        state.errors += 1;
+        state.lastError = 'rate_limited';
+        continue;
+      }
+
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+
+      const session = activeSessionByChannelId(activeSessions, channelId);
+      const isControlChannelForHelp = channelId === String(config.discordBot.channelId || '').trim();
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content: formatChannelHelp(config, isControlChannelForHelp, !!session),
+        replyToMessageId: message.id,
+      }).catch(() => {});
+      continue;
+    }
+
     if (lifecycle?.kind === 'terminate-session') {
       if (!limiter.canProceed()) {
         state.errors += 1;
