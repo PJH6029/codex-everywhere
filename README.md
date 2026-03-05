@@ -81,6 +81,26 @@ Even with bootstrap, user interaction is still required for:
 - Discord CAPTCHA/anti-bot checks
 - Discord re-auth prompts for token reveal/generation
 
+### Files Written by Setup Commands
+
+`codex-everywhere setup bootstrap`:
+
+- `./.codex/config.toml`
+  - Created or updated.
+  - Writes/replaces the `# BEGIN/END codex-everywhere bootstrap config` block for Playwright MCP/tool approval defaults.
+- `~/.codex/config.toml`
+  - Created or updated.
+  - Adds/updates trust for the current project path (`projects."<abs-path>".trust_level = "trusted"`).
+- `./.agents/skills/setup-discord/SKILL.md`
+  - Created only if missing.
+  - Uses repository-local skill location (not global).
+
+`codex-everywhere setup discord`:
+
+- `~/.codex/.omx-config.json` by default (or `--config-path <path>` if provided)
+  - Created or updated.
+  - Merges notification/reply/provisioning settings under `notifications`.
+
 ## Features
 
 - Starts Codex in tmux via `codex-everywhere`
