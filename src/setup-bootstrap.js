@@ -20,6 +20,7 @@ const PROJECT_CODEX_CONFIG_PATH = resolve(process.cwd(), '.codex', 'config.toml'
 const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'config.toml');
 const PROJECT_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap config';
 const PROJECT_CONFIG_END = '# END codex-everywhere bootstrap config';
+const BOOTSTRAP_REASONING_EFFORT = 'xhigh';
 
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -200,6 +201,7 @@ function parseBootstrapArgs(args) {
     launch: true,
     unsafe: false,
     model: '',
+    reasoningEffort: BOOTSTRAP_REASONING_EFFORT,
   };
 
   for (let idx = 0; idx < args.length; idx += 1) {
@@ -227,9 +229,28 @@ function parseBootstrapArgs(args) {
       idx += 1;
       continue;
     }
+    if (token === '--reasoning-effort' || token === '--effort') {
+      const value = String(args[idx + 1] || '').trim();
+      if (!value || value.startsWith('-')) {
+        throw new Error('`--reasoning-effort` requires a value');
+      }
+      parsed.reasoningEffort = value;
+      idx += 1;
+      continue;
+    }
     if (token.startsWith('--model=')) {
       parsed.model = token.slice('--model='.length).trim();
       if (!parsed.model) throw new Error('`--model` requires a value');
+      continue;
+    }
+    if (token.startsWith('--reasoning-effort=')) {
+      parsed.reasoningEffort = token.slice('--reasoning-effort='.length).trim();
+      if (!parsed.reasoningEffort) throw new Error('`--reasoning-effort` requires a value');
+      continue;
+    }
+    if (token.startsWith('--effort=')) {
+      parsed.reasoningEffort = token.slice('--effort='.length).trim();
+      if (!parsed.reasoningEffort) throw new Error('`--reasoning-effort` requires a value');
       continue;
     }
 
@@ -338,6 +359,7 @@ function launchGuidedSetupSession(options, prompt) {
   if (codexSupportsNoAltScreen()) {
     args.push('--no-alt-screen');
   }
+  args.push('-c', `model_reasoning_effort=${tomlString(options.reasoningEffort)}`);
   if (options.model) {
     args.push('--model', options.model);
   }

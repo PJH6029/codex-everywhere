@@ -65,7 +65,7 @@ What it does:
   - `apps.playwright.tools.*.approval_mode = "approve"` for core browser actions
 - Marks current project as trusted in `~/.codex/config.toml` so project config is loaded.
 - Installs local `setup-discord` skill into `./.agents/skills/setup-discord/SKILL.md` (project-local, not global).
-- Launches Codex with a guided setup prompt that runs `$setup-discord`.
+- Launches Codex with a guided setup prompt that runs `$setup-discord` and sets reasoning effort to `xhigh` for initialization.
 - Uses initialization assets from `./bootstrap/` (project config template + guided setup prompt template).
 
 Useful flags:
@@ -73,6 +73,7 @@ Useful flags:
 - `--no-install`: do not auto-install missing prerequisites.
 - `--no-launch`: only prepare prerequisites/skill, do not launch Codex.
 - `--model <name>`: launch setup with a specific model.
+- `--reasoning-effort <level>` (or `--effort <level>`): override bootstrap reasoning effort (default: `xhigh`).
 - `--unsafe`: launch Codex with `--dangerously-bypass-approvals-and-sandbox` (use carefully).
 
 Even with bootstrap, user interaction is still required for:
