@@ -256,6 +256,17 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+function codexSupportsNoAltScreen() {
+  const result = spawnSync('codex', ['--help'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf-8',
+    timeout: 5000,
+  });
+  if (result.error || result.status !== 0) return false;
+  const helpText = `${result.stdout || ''}\n${result.stderr || ''}`.toLowerCase();
+  return helpText.includes('--no-alt-screen');
+}
+
 function tryInstallCodex() {
   console.log('[codex-everywhere] installing codex CLI globally (npm i -g @openai/codex)...');
   const result = runCommand('npm', ['i', '-g', '@openai/codex']);
@@ -323,7 +334,10 @@ async function ensureSetupDiscordSkillInstalled(cwd) {
 }
 
 function launchGuidedSetupSession(options, prompt) {
-  const args = ['--no-alt-screen'];
+  const args = [];
+  if (codexSupportsNoAltScreen()) {
+    args.push('--no-alt-screen');
+  }
   if (options.model) {
     args.push('--model', options.model);
   }

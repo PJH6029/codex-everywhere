@@ -50,6 +50,17 @@ function hasArg(args, value) {
   return args.includes(value);
 }
 
+function codexSupportsNoAltScreen(codexBinary) {
+  const result = spawnSync(codexBinary, ['--help'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf-8',
+    timeout: 5000,
+  });
+  if (result.error || result.status !== 0) return false;
+  const helpText = `${result.stdout || ''}\n${result.stderr || ''}`.toLowerCase();
+  return helpText.includes('--no-alt-screen');
+}
+
 async function notifyWithRetry(event, payload, options = {}) {
   const attempts = Math.max(1, Number.parseInt(String(options.attempts ?? 3), 10) || 3);
   const baseDelayMs = Math.max(100, Number.parseInt(String(options.baseDelayMs ?? 700), 10) || 700);
@@ -179,7 +190,7 @@ async function main() {
   const notifyConfig = `notify=[\"node\",\"${escapedHook}\"]`;
 
   const passthrough = [...parsed.passthrough];
-  if (!hasArg(passthrough, '--no-alt-screen')) {
+  if (codexSupportsNoAltScreen(codexBinary) && !hasArg(passthrough, '--no-alt-screen')) {
     passthrough.unshift('--no-alt-screen');
   }
 
