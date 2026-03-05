@@ -1,7 +1,7 @@
 {
   "name": "codex-everywhere",
   "version": "0.1.0",
-  "description": "Run Codex in tmux with OMX-style Discord notifications and two-way replies.",
+  "description": "Run Codex in tmux with Discord notifications and two-way replies.",
   "type": "module",
   "bin": {
     "codex-everywhere": "bin/codex-everywhere.js"

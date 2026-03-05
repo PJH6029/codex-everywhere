@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from 'fs';
-import { DAEMON_STATE_PATH, OMX_CONFIG_PATH } from './constants.js';
+import { CODEX_EVERYWHERE_CONFIG_PATH, DAEMON_STATE_PATH } from './constants.js';
 import { clampInt, parseBoolean, parseDiscordIds } from './utils.js';
 
 function readRawConfig() {
-  if (!existsSync(OMX_CONFIG_PATH)) return null;
+  if (!existsSync(CODEX_EVERYWHERE_CONFIG_PATH)) return null;
   try {
-    return JSON.parse(readFileSync(OMX_CONFIG_PATH, 'utf-8'));
+    return JSON.parse(readFileSync(CODEX_EVERYWHERE_CONFIG_PATH, 'utf-8'));
   } catch {
     return null;
   }
@@ -38,9 +38,7 @@ function readDaemonDebugFlag() {
 }
 
 function resolveDebugMode(notifications) {
-  const envDebug = parseOptionalBoolean(
-    process.env.OMX_CE_DEBUG ?? process.env.CODEX_EVERYWHERE_DEBUG,
-  );
+  const envDebug = parseOptionalBoolean(process.env.CODEX_EVERYWHERE_DEBUG);
   if (typeof envDebug === 'boolean') return envDebug;
 
   const fileDebug = parseOptionalBoolean(notifications?.debug);
@@ -74,8 +72,8 @@ function resolveDiscordBotConfig(notifications) {
   const file = notifications?.['discord-bot'];
   const fileEnabled = file?.enabled !== false;
 
-  const envBotToken = typeof process.env.OMX_DISCORD_NOTIFIER_BOT_TOKEN === 'string'
-    ? process.env.OMX_DISCORD_NOTIFIER_BOT_TOKEN.trim()
+  const envBotToken = typeof process.env.CODEX_EVERYWHERE_DISCORD_BOT_TOKEN === 'string'
+    ? process.env.CODEX_EVERYWHERE_DISCORD_BOT_TOKEN.trim()
     : '';
   const fileBotToken = typeof file?.botToken === 'string'
     ? file.botToken.trim()
@@ -87,8 +85,8 @@ function resolveDiscordBotConfig(notifications) {
       ? fileBotToken
       : '';
 
-  const channelId = process.env.OMX_DISCORD_NOTIFIER_CHANNEL || file?.channelId || '';
-  const mention = validateMention(process.env.OMX_DISCORD_MENTION) || validateMention(file?.mention);
+  const channelId = process.env.CODEX_EVERYWHERE_DISCORD_CHANNEL || file?.channelId || '';
+  const mention = validateMention(process.env.CODEX_EVERYWHERE_DISCORD_MENTION) || validateMention(file?.mention);
 
   const enabled = fileEnabled && !!botToken && !!channelId;
 
@@ -105,16 +103,16 @@ function resolveDiscordProvisioningConfig(notifications, hasDiscordBot) {
   const file = notifications?.['discord-bot']?.provisioning;
 
   const enabled =
-    parseBoolean(process.env.OMX_DISCORD_PROVISION_ENABLED, file?.enabled !== false) &&
+    parseBoolean(process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_ENABLED, file?.enabled !== false) &&
     hasDiscordBot;
 
-  const prefixRaw = typeof process.env.OMX_DISCORD_PROVISION_PREFIX === 'string'
-    ? process.env.OMX_DISCORD_PROVISION_PREFIX
+  const prefixRaw = typeof process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_PREFIX === 'string'
+    ? process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_PREFIX
     : file?.channelPrefix;
   const channelPrefix = typeof prefixRaw === 'string' ? prefixRaw.trim().toLowerCase() : 'codex-';
 
-  const envCategory = typeof process.env.OMX_DISCORD_PROVISION_CATEGORY_ID === 'string'
-    ? process.env.OMX_DISCORD_PROVISION_CATEGORY_ID.trim()
+  const envCategory = typeof process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_CATEGORY_ID === 'string'
+    ? process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_CATEGORY_ID.trim()
     : '';
   const fileCategory = typeof file?.categoryId === 'string'
     ? file.categoryId.trim()
@@ -123,14 +121,14 @@ function resolveDiscordProvisioningConfig(notifications, hasDiscordBot) {
   const categoryId = /^\d{17,20}$/.test(categoryIdCandidate) ? categoryIdCandidate : '';
 
   const pollIntervalMs = clampInt(
-    process.env.OMX_DISCORD_PROVISION_POLL_INTERVAL_MS ?? file?.pollIntervalMs,
+    process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_POLL_INTERVAL_MS ?? file?.pollIntervalMs,
     3000,
     1000,
     60000,
   );
 
   const maxManagedChannels = clampInt(
-    process.env.OMX_DISCORD_PROVISION_MAX_CHANNELS ?? file?.maxManagedChannels,
+    process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_MAX_CHANNELS ?? file?.maxManagedChannels,
     40,
     1,
     500,
@@ -149,10 +147,10 @@ function resolveReplyConfig(notifications, hasDiscordBot) {
   const replyRaw = notifications?.reply;
 
   const enabled =
-    parseBoolean(process.env.OMX_REPLY_ENABLED, false) ||
+    parseBoolean(process.env.CODEX_EVERYWHERE_REPLY_ENABLED, false) ||
     replyRaw?.enabled === true;
 
-  const idsFromEnv = parseDiscordIds(process.env.OMX_REPLY_DISCORD_USER_IDS);
+  const idsFromEnv = parseDiscordIds(process.env.CODEX_EVERYWHERE_REPLY_DISCORD_USER_IDS);
   const idsFromFile = Array.isArray(replyRaw?.authorizedDiscordUserIds)
     ? replyRaw.authorizedDiscordUserIds.filter((id) => typeof id === 'string' && /^\d{17,20}$/.test(id))
     : [];
@@ -160,36 +158,36 @@ function resolveReplyConfig(notifications, hasDiscordBot) {
   const authorizedDiscordUserIds = idsFromEnv.length > 0 ? idsFromEnv : idsFromFile;
 
   const pollIntervalMs = clampInt(
-    process.env.OMX_REPLY_POLL_INTERVAL_MS ?? replyRaw?.pollIntervalMs,
+    process.env.CODEX_EVERYWHERE_REPLY_POLL_INTERVAL_MS ?? replyRaw?.pollIntervalMs,
     3000,
     500,
     60000,
   );
 
   const rateLimitPerMinute = clampInt(
-    process.env.OMX_REPLY_RATE_LIMIT ?? replyRaw?.rateLimitPerMinute,
+    process.env.CODEX_EVERYWHERE_REPLY_RATE_LIMIT ?? replyRaw?.rateLimitPerMinute,
     10,
     1,
     120,
   );
 
   const maxMessageLength = clampInt(
-    process.env.OMX_REPLY_MAX_MESSAGE_LENGTH ?? replyRaw?.maxMessageLength,
+    process.env.CODEX_EVERYWHERE_REPLY_MAX_MESSAGE_LENGTH ?? replyRaw?.maxMessageLength,
     500,
     1,
     4000,
   );
 
   const includePrefix =
-    process.env.OMX_REPLY_INCLUDE_PREFIX !== 'false' &&
+    process.env.CODEX_EVERYWHERE_REPLY_INCLUDE_PREFIX !== 'false' &&
     replyRaw?.includePrefix !== false;
 
   const autoContinueOnDeny =
-    process.env.OMX_REPLY_AUTO_CONTINUE_ON_DENY !== 'false' &&
+    process.env.CODEX_EVERYWHERE_REPLY_AUTO_CONTINUE_ON_DENY !== 'false' &&
     replyRaw?.autoContinueOnDeny !== false;
 
-  const denyMessageFromEnv = typeof process.env.OMX_REPLY_ON_DENY_MESSAGE === 'string'
-    ? process.env.OMX_REPLY_ON_DENY_MESSAGE.trim()
+  const denyMessageFromEnv = typeof process.env.CODEX_EVERYWHERE_REPLY_ON_DENY_MESSAGE === 'string'
+    ? process.env.CODEX_EVERYWHERE_REPLY_ON_DENY_MESSAGE.trim()
     : '';
   const denyMessageFromFile = typeof replyRaw?.onDenyMessage === 'string'
     ? replyRaw.onDenyMessage.trim()
@@ -246,6 +244,6 @@ export function loadAppConfig() {
       approvalRequest: eventEnabled(events, 'approval-request', true),
       askUserQuestion: eventEnabled(events, 'ask-user-question', true),
     },
-    rawConfigPath: OMX_CONFIG_PATH,
+    rawConfigPath: CODEX_EVERYWHERE_CONFIG_PATH,
   };
 }

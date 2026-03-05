@@ -2,10 +2,11 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 export const HOME_DIR = homedir();
-export const OMX_CONFIG_PATH = join(HOME_DIR, '.codex', '.omx-config.json');
+export const CODEX_EVERYWHERE_HOME_DIR = join(HOME_DIR, '.codex-everywhere');
+export const CODEX_EVERYWHERE_CONFIG_PATH = join(CODEX_EVERYWHERE_HOME_DIR, 'config.json');
 
-export const GLOBAL_STATE_DIR = join(HOME_DIR, '.omx', 'state', 'codex-everywhere');
-export const GLOBAL_LOG_DIR = join(HOME_DIR, '.omx', 'logs');
+export const GLOBAL_STATE_DIR = join(CODEX_EVERYWHERE_HOME_DIR, 'state');
+export const GLOBAL_LOG_DIR = join(CODEX_EVERYWHERE_HOME_DIR, 'logs');
 
 export const REGISTRY_PATH = join(GLOBAL_STATE_DIR, 'session-registry.jsonl');
 export const ACTIVE_SESSIONS_PATH = join(GLOBAL_STATE_DIR, 'active-sessions.json');

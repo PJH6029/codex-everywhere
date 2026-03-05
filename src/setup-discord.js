@@ -1,7 +1,7 @@
 import { existsSync } from 'fs';
 import { mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname } from 'path';
-import { OMX_CONFIG_PATH } from './constants.js';
+import { CODEX_EVERYWHERE_CONFIG_PATH } from './constants.js';
 import {
   fetchChannelMessages,
   getDiscordChannel,
@@ -33,7 +33,7 @@ function usageText() {
     '  --rate-limit-per-minute <int>        default: 10',
     '  --max-message-length <int>           default: 500',
     '  --max-managed-channels <int>         default: 40',
-    '  --config-path <path>                 default: ~/.codex/.omx-config.json',
+    '  --config-path <path>                 default: ~/.codex-everywhere/config.json',
     '  --skip-test-message                  do not send setup confirmation message',
     '',
     'Examples:',
@@ -60,7 +60,7 @@ function parseArgs(args) {
     rateLimitPerMinute: 10,
     maxMessageLength: 500,
     maxManagedChannels: 40,
-    configPath: OMX_CONFIG_PATH,
+    configPath: CODEX_EVERYWHERE_CONFIG_PATH,
     skipTestMessage: false,
   };
 
@@ -150,7 +150,7 @@ function parseArgs(args) {
       continue;
     }
     if (token === '--config-path') {
-      parsed.configPath = String(args[idx + 1] || '').trim() || OMX_CONFIG_PATH;
+      parsed.configPath = String(args[idx + 1] || '').trim() || CODEX_EVERYWHERE_CONFIG_PATH;
       idx += 1;
       continue;
     }

@@ -53,7 +53,7 @@ Usage:
 
 Behavior:
   - Starts Codex in tmux
-  - Sends Discord bot notifications (OMX-compatible config/env)
+  - Sends Discord bot notifications
   - Accepts Discord replies and injects them into the Codex pane
   - Forwards Codex approval prompts through Discord and injects decisions
   - Lists, opens, and terminates tmux sessions created from Discord channels
@@ -99,7 +99,7 @@ const DEFAULT_NEW_CHANNEL_NAME = 'new-channel';
 function ensureDiscordConfigured(config) {
   if (!config.notificationsEnabled || !config.discordBot.enabled) {
     throw new Error(
-      'Discord bot notification config missing. Set OMX_DISCORD_NOTIFIER_BOT_TOKEN and OMX_DISCORD_NOTIFIER_CHANNEL, or configure ~/.codex/.omx-config.json notifications["discord-bot"].',
+      'Discord bot notification config missing. Set CODEX_EVERYWHERE_DISCORD_BOT_TOKEN and CODEX_EVERYWHERE_DISCORD_CHANNEL, or configure ~/.codex-everywhere/config.json notifications["discord-bot"].',
     );
   }
 }
@@ -593,7 +593,7 @@ async function notifyWithRetry(event, payload, options = {}) {
   const attempts = Math.max(1, Number.parseInt(String(options.attempts ?? 3), 10) || 3);
   const baseDelayMs = Math.max(100, Number.parseInt(String(options.baseDelayMs ?? 700), 10) || 700);
   const projectPath = payload.projectPath || process.cwd();
-  const logPath = resolveFromCwd(projectPath, '.omx', 'logs', todayFileName('codex-everywhere-notify'));
+  const logPath = resolveFromCwd(projectPath, '.codex-everywhere', 'logs', todayFileName('codex-everywhere-notify'));
 
   let lastResult = { success: false, error: 'unknown' };
 

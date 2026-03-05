@@ -1,6 +1,6 @@
 # codex-everywhere
 
-Minimal OMX-like Codex add-on focused on messenger interaction.
+Minimal Codex add-on focused on messenger interaction.
 
 `codex-everywhere` runs Codex in a tmux pane, sends Discord bot notifications, accepts Discord replies, and injects those replies back into the Codex session.
 
@@ -100,7 +100,7 @@ Even with bootstrap, user interaction is still required for:
 
 `codex-everywhere setup discord`:
 
-- `~/.codex/.omx-config.json` by default (or `--config-path <path>` if provided)
+- `~/.codex-everywhere/config.json` by default (or `--config-path <path>` if provided)
   - Created or updated.
   - Merges notification/reply/provisioning settings under `notifications`.
 
@@ -116,7 +116,7 @@ Even with bootstrap, user interaction is still required for:
   - New channels that match provisioning filters auto-start a detached Codex session
   - Messages posted in that channel route directly to that session
   - New channels start with a default `new-channel`-style name and are auto-renamed from conversation context
-- OMX-compatible Discord env/config keys
+- Native `codex-everywhere` env/config keys
 
 ## Prerequisites
 
@@ -201,37 +201,37 @@ Without **Manage Channels**, session termination works but channel deletion fail
 
 ### Runtime Config (Env Vars)
 
-Use OMX-compatible env vars:
+Use `codex-everywhere` env vars:
 
 ```bash
-export OMX_DISCORD_NOTIFIER_BOT_TOKEN="<discord-bot-token>"
-export OMX_DISCORD_NOTIFIER_CHANNEL="<discord-channel-id>"
+export CODEX_EVERYWHERE_DISCORD_BOT_TOKEN="<discord-bot-token>"
+export CODEX_EVERYWHERE_DISCORD_CHANNEL="<discord-channel-id>"
 ```
 
 To enable reply injection auth:
 
 ```bash
-export OMX_REPLY_ENABLED="true"
-export OMX_REPLY_DISCORD_USER_IDS="123456789012345678"
+export CODEX_EVERYWHERE_REPLY_ENABLED="true"
+export CODEX_EVERYWHERE_REPLY_DISCORD_USER_IDS="123456789012345678"
 ```
 
 Optional:
 
 ```bash
-export OMX_DISCORD_MENTION="<@123456789012345678>"
-export OMX_REPLY_POLL_INTERVAL_MS="3000"
-export OMX_REPLY_RATE_LIMIT="10"
-export OMX_REPLY_INCLUDE_PREFIX="true"
-export OMX_REPLY_AUTO_CONTINUE_ON_DENY="true"
+export CODEX_EVERYWHERE_DISCORD_MENTION="<@123456789012345678>"
+export CODEX_EVERYWHERE_REPLY_POLL_INTERVAL_MS="3000"
+export CODEX_EVERYWHERE_REPLY_RATE_LIMIT="10"
+export CODEX_EVERYWHERE_REPLY_INCLUDE_PREFIX="true"
+export CODEX_EVERYWHERE_REPLY_AUTO_CONTINUE_ON_DENY="true"
 # Optional custom instruction injected after deny (`n`)
-export OMX_REPLY_ON_DENY_MESSAGE="User denied this command. Continue without running it and choose a safe alternative."
+export CODEX_EVERYWHERE_REPLY_ON_DENY_MESSAGE="User denied this command. Continue without running it and choose a safe alternative."
 
 # Optional channel provisioning controls (new channel => new Codex session)
-export OMX_DISCORD_PROVISION_ENABLED="true"
-export OMX_DISCORD_PROVISION_PREFIX="codex-"
-export OMX_DISCORD_PROVISION_CATEGORY_ID=""
-export OMX_DISCORD_PROVISION_POLL_INTERVAL_MS="3000"
-export OMX_DISCORD_PROVISION_MAX_CHANNELS="40"
+export CODEX_EVERYWHERE_DISCORD_PROVISION_ENABLED="true"
+export CODEX_EVERYWHERE_DISCORD_PROVISION_PREFIX="codex-"
+export CODEX_EVERYWHERE_DISCORD_PROVISION_CATEGORY_ID=""
+export CODEX_EVERYWHERE_DISCORD_PROVISION_POLL_INTERVAL_MS="3000"
+export CODEX_EVERYWHERE_DISCORD_PROVISION_MAX_CHANNELS="40"
 ```
 
 ### One-shot setup command (recommended)
@@ -266,7 +266,7 @@ codex-everywhere setup discord \
   --authorized-user-id "<YOUR_USER_ID>"
 ```
 
-`OMX_REPLY_INCLUDE_PREFIX="true"` is recommended.  
+`CODEX_EVERYWHERE_REPLY_INCLUDE_PREFIX="true"` is recommended.  
 It helps avoid echo loops by tagging Discord-injected prompts as `[reply:discord]`.
 
 Recommended restart after changing env/config:
@@ -287,7 +287,7 @@ Return to minimal user-facing messages:
 codex-everywhere daemon restart --no-debug
 ```
 
-You can also set the same values in `~/.codex/.omx-config.json`:
+You can also set the same values in `~/.codex-everywhere/config.json`:
 
 ```json
 {
@@ -334,7 +334,7 @@ codex-everywhere daemon start --no-debug
 codex-everywhere daemon stop
 ```
 
-If `daemon start` reports a conflicting listener, stop old OMX reply listeners first:
+If `daemon start` reports a conflicting listener, stop old legacy listeners first (safety race check only):
 
 ```bash
 pkill -f 'oh-my-codex/dist/notifications/reply-listener.js'
@@ -485,10 +485,10 @@ Replies/mentions may still work without it, but plain text command parsing is un
   - Enable **Message Content Intent**.
   - Restart daemon after intent/permission updates.
 - `!ce-exit` did nothing:
-  - Ensure message came from a user in `OMX_REPLY_DISCORD_USER_IDS`.
+  - Ensure message came from a user in `CODEX_EVERYWHERE_REPLY_DISCORD_USER_IDS`.
   - Use exact command text (or reply/mention with the command).
 
 ## Logs and State
 
-- Project logs: `<project>/.omx/logs/codex-everywhere-turns-YYYY-MM-DD.jsonl`
-- Global daemon/session state: `~/.omx/state/codex-everywhere/`
+- Project logs: `<project>/.codex-everywhere/logs/codex-everywhere-turns-YYYY-MM-DD.jsonl`
+- Global daemon/session state: `~/.codex-everywhere/state/`

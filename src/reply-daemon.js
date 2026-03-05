@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs';
 import { stat } from 'fs/promises';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomUUID } from 'crypto';
@@ -81,7 +81,7 @@ const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const DENY_INTERRUPTED_SUPPRESS_MS = 15000;
 const REPLY_DAEMON_SCRIPT_PATH = fileURLToPath(import.meta.url);
 const RUN_CODEX_SCRIPT_PATH = fileURLToPath(new URL('./run-codex.js', import.meta.url));
-const OMX_REPLY_LISTENER_PATTERNS = [
+const LEGACY_REPLY_LISTENER_PATTERNS = [
   'oh-my-codex/dist/notifications/reply-listener.js',
   'dist/notifications/reply-listener.js',
 ];
@@ -93,7 +93,7 @@ function readPid() {
 }
 
 function writePid(pid) {
-  ensureDir(GLOBAL_STATE_DIR).catch(() => {});
+  mkdirSync(GLOBAL_STATE_DIR, { recursive: true });
   writeFileSync(DAEMON_PID_PATH, `${pid}\n`, { mode: 0o600 });
 }
 
@@ -190,7 +190,7 @@ function listConflictingReplyListenerPids() {
 
       const lowerArgs = args.toLowerCase();
       if (!/\bnode(\s|$)/.test(lowerArgs)) return null;
-      const isConflict = OMX_REPLY_LISTENER_PATTERNS.some((pattern) => lowerArgs.includes(pattern.toLowerCase()));
+      const isConflict = LEGACY_REPLY_LISTENER_PATTERNS.some((pattern) => lowerArgs.includes(pattern.toLowerCase()));
       return isConflict ? pid : null;
     })
     .filter((pid) => Number.isFinite(pid));
@@ -211,6 +211,7 @@ function tryAcquireLock() {
   }
 
   try {
+    mkdirSync(GLOBAL_STATE_DIR, { recursive: true });
     writeFileSync(DAEMON_LOCK_PATH, `${process.pid}\n`, { mode: 0o600, flag: 'wx' });
     return true;
   } catch (error) {
@@ -228,6 +229,7 @@ function tryAcquireLock() {
       removeLock();
 
       try {
+        mkdirSync(GLOBAL_STATE_DIR, { recursive: true });
         writeFileSync(DAEMON_LOCK_PATH, `${process.pid}\n`, { mode: 0o600, flag: 'wx' });
         return true;
       } catch {
@@ -276,10 +278,6 @@ function resolveDaemonDebugValue(options = {}, fallback = false) {
     return options.debug;
   }
 
-  if (typeof process.env.OMX_CE_DEBUG === 'string') {
-    return parseBoolean(process.env.OMX_CE_DEBUG, fallback);
-  }
-
   if (typeof process.env.CODEX_EVERYWHERE_DEBUG === 'string') {
     return parseBoolean(process.env.CODEX_EVERYWHERE_DEBUG, fallback);
   }
@@ -296,7 +294,8 @@ export async function startDaemon(options = {}) {
     return {
       success: false,
       message:
-        `conflicting OMX reply listener detected (pid: ${conflicts.join(', ')}). ` +
+        `conflicting legacy reply listener detected (pid: ${conflicts.join(', ')}). ` +
+        "codex-everywhere has no OMX dependency, but this safety check prevents reply-injection races. " +
         "Stop it first: pkill -f 'oh-my-codex/dist/notifications/reply-listener.js'",
     };
   }
