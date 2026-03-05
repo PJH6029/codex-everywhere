@@ -45,13 +45,25 @@ After setup, type `!ce-new` in control channel.
 If you want to delegate setup prep + guided setup launch to one command:
 
 ```bash
+git clone https://github.com/PJH6029/codex-everywhere.git
+cd codex-everywhere
+npm link
+codex-everywhere setup bootstrap
+```
+
+Or, if you already cloned/linked:
+
+```bash
 codex-everywhere setup bootstrap
 ```
 
 What it does:
 
 - Verifies `codex` and `tmux` are installed (attempts auto-install if missing).
-- Ensures Playwright MCP is registered in Codex (`playwright`).
+- Writes project-scoped Codex config at `.codex/config.toml` with:
+  - `mcp_servers.playwright` (`npx @playwright/mcp@latest`)
+  - `apps.playwright.tools.*.approval_mode = "approve"` for core browser actions
+- Marks current project as trusted in `~/.codex/config.toml` so project config is loaded.
 - Installs local `setup-discord` skill into `~/.codex/skills/setup-discord/SKILL.md`.
 - Launches Codex with a guided setup prompt that runs `$setup-discord`.
 

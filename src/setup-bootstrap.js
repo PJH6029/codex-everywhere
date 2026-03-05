@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { existsSync } from 'fs';
-import { copyFile, mkdir } from 'fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'fs/promises';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 
 const SETUP_SKILL_SOURCE_PATH = fileURLToPath(
   new URL('../.agents/skills/setup-discord/SKILL.md', import.meta.url),
@@ -16,6 +17,148 @@ const SETUP_SKILL_DEST_PATH = resolve(
   'setup-discord',
   'SKILL.md',
 );
+const PROJECT_CODEX_CONFIG_PATH = resolve(process.cwd(), '.codex', 'config.toml');
+const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'config.toml');
+const PROJECT_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap config';
+const PROJECT_CONFIG_END = '# END codex-everywhere bootstrap config';
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function tomlString(value) {
+  return `"${String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')}"`;
+}
+
+function buildProjectConfigBlock(cwd) {
+  const playwrightProfileDir = resolve(cwd, '.codex', 'playwright-mcp-profile');
+  return [
+    PROJECT_CONFIG_BEGIN,
+    '[mcp_servers.playwright]',
+    'command = "npx"',
+    `args = ["-y", "@playwright/mcp@latest", "--user-data-dir=${playwrightProfileDir.replace(/\\/g, '/')}"]`,
+    '',
+    '[apps.playwright.tools.browser_navigate]',
+    'approval_mode = "approve"',
+    '',
+    '[apps.playwright.tools.browser_click]',
+    'approval_mode = "approve"',
+    '',
+    '[apps.playwright.tools.browser_type]',
+    'approval_mode = "approve"',
+    '',
+    '[apps.playwright.tools.browser_fill_form]',
+    'approval_mode = "approve"',
+    '',
+    '[apps.playwright.tools.browser_close]',
+    'approval_mode = "approve"',
+    PROJECT_CONFIG_END,
+    '',
+  ].join('\n');
+}
+
+async function readTextOrEmpty(path) {
+  try {
+    return await readFile(path, 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
+async function writeProjectConfigBlock(cwd) {
+  const current = await readTextOrEmpty(PROJECT_CODEX_CONFIG_PATH);
+  const hasPlaywrightSections =
+    current.includes('[mcp_servers.playwright]') ||
+    current.includes('[apps.playwright.tools.browser_navigate]');
+  const block = buildProjectConfigBlock(cwd);
+
+  let next = current;
+  if (current.includes(PROJECT_CONFIG_BEGIN) && current.includes(PROJECT_CONFIG_END)) {
+    const pattern = new RegExp(
+      `${escapeRegExp(PROJECT_CONFIG_BEGIN)}[\\s\\S]*?${escapeRegExp(PROJECT_CONFIG_END)}\\n?`,
+      'm',
+    );
+    next = current.replace(pattern, block);
+  } else if (hasPlaywrightSections) {
+    // Preserve user-owned sections when they already configured this manually.
+    console.log('[codex-everywhere] project .codex/config.toml already has playwright config; leaving as-is.');
+    return;
+  } else if (!current.trim()) {
+    next = `${block}`;
+  } else {
+    next = `${current.trimEnd()}\n\n${block}`;
+  }
+
+  await mkdir(dirname(PROJECT_CODEX_CONFIG_PATH), { recursive: true });
+  await writeFile(PROJECT_CODEX_CONFIG_PATH, next, 'utf-8');
+  console.log(`[codex-everywhere] wrote project config: ${PROJECT_CODEX_CONFIG_PATH}`);
+}
+
+function replaceTrustInsideProjectTable(content, escapedProjectPath) {
+  const header = `[projects.${tomlString(escapedProjectPath)}]`;
+  const headerIndex = content.indexOf(header);
+  if (headerIndex < 0) return null;
+
+  const headerEnd = content.indexOf('\n', headerIndex);
+  const sectionStart = headerEnd >= 0 ? headerEnd + 1 : content.length;
+  const rest = content.slice(sectionStart);
+  const nextTableMatch = rest.match(/^\s*\[[^\]]+\]/m);
+  const sectionEnd = nextTableMatch ? sectionStart + nextTableMatch.index : content.length;
+  const section = content.slice(sectionStart, sectionEnd);
+
+  let updatedSection = section;
+  if (/^\s*trust_level\s*=.*$/m.test(section)) {
+    updatedSection = section.replace(/^\s*trust_level\s*=.*$/m, 'trust_level = "trusted"');
+  } else {
+    updatedSection = `${section.trimEnd()}\ntrust_level = "trusted"\n`;
+  }
+
+  return `${content.slice(0, sectionStart)}${updatedSection}${content.slice(sectionEnd)}`;
+}
+
+async function ensureProjectTrusted(cwd) {
+  if (!process.env.HOME) {
+    throw new Error('HOME environment variable is not set');
+  }
+
+  const escapedProjectPath = String(cwd || '').replace(/\\/g, '/');
+  const quotedPath = tomlString(escapedProjectPath);
+  const dottedTrustLine = `projects.${quotedPath}.trust_level = "trusted"`;
+  const dottedRegex = new RegExp(
+    `^\\s*projects\\.${escapeRegExp(quotedPath)}\\.trust_level\\s*=\\s*".*?"\\s*$`,
+    'm',
+  );
+
+  const markerId = createHash('sha256').update(escapedProjectPath).digest('hex').slice(0, 12);
+  const begin = `# BEGIN codex-everywhere project trust ${markerId}`;
+  const end = `# END codex-everywhere project trust ${markerId}`;
+  const block = `${begin}\n${dottedTrustLine}\n${end}\n`;
+
+  const current = await readTextOrEmpty(GLOBAL_CODEX_CONFIG_PATH);
+  let next = current;
+
+  if (dottedRegex.test(current)) {
+    next = current.replace(dottedRegex, dottedTrustLine);
+  } else {
+    const tableUpdated = replaceTrustInsideProjectTable(current, escapedProjectPath);
+    if (tableUpdated !== null) {
+      next = tableUpdated;
+    } else if (current.includes(begin) && current.includes(end)) {
+      const pattern = new RegExp(`${escapeRegExp(begin)}[\\s\\S]*?${escapeRegExp(end)}\\n?`, 'm');
+      next = current.replace(pattern, block);
+    } else if (!current.trim()) {
+      next = block;
+    } else {
+      next = `${current.trimEnd()}\n\n${block}`;
+    }
+  }
+
+  await mkdir(dirname(GLOBAL_CODEX_CONFIG_PATH), { recursive: true });
+  await writeFile(GLOBAL_CODEX_CONFIG_PATH, next, 'utf-8');
+  console.log(`[codex-everywhere] marked project as trusted in ${GLOBAL_CODEX_CONFIG_PATH}`);
+}
 
 function parseBootstrapArgs(args) {
   const parsed = {
@@ -122,25 +265,6 @@ function tryInstallTmux() {
   return false;
 }
 
-function ensurePlaywrightMcp() {
-  if (!commandExists('codex')) {
-    throw new Error('codex not found while configuring MCP');
-  }
-
-  console.log('[codex-everywhere] ensuring playwright MCP server is configured...');
-  const addResult = runCommand(
-    'codex',
-    ['mcp', 'add', 'playwright', '--', 'npx', '-y', '@playwright/mcp@latest'],
-    { stdio: 'pipe', encoding: 'utf-8', timeout: 30000 },
-  );
-
-  if (addResult.error || addResult.status !== 0) {
-    const stderr = String(addResult.stderr || '').trim();
-    const stdout = String(addResult.stdout || '').trim();
-    throw new Error(`failed to configure playwright MCP (${stderr || stdout || 'unknown error'})`);
-  }
-}
-
 async function ensureSetupDiscordSkillInstalled() {
   if (!process.env.HOME) {
     throw new Error('HOME environment variable is not set');
@@ -186,6 +310,7 @@ function launchGuidedSetupSession(options) {
 
 export async function runBootstrapSetupCommand(args = []) {
   const options = parseBootstrapArgs(args);
+  const cwd = process.cwd();
 
   if (!commandExists('codex')) {
     if (!options.installMissing || !tryInstallCodex() || !commandExists('codex')) {
@@ -201,10 +326,12 @@ export async function runBootstrapSetupCommand(args = []) {
     }
   }
 
-  ensurePlaywrightMcp();
+  await writeProjectConfigBlock(cwd);
+  await ensureProjectTrusted(cwd);
   await ensureSetupDiscordSkillInstalled();
 
   console.log('[codex-everywhere] bootstrap preparation complete.');
+  console.log('[codex-everywhere] project-scoped Codex config for playwright MCP + tool approvals is ready.');
   console.log('[codex-everywhere] user actions still required during setup: /permissions approval, CAPTCHA, and Discord re-auth prompts.');
 
   if (!options.launch) {
@@ -215,4 +342,3 @@ export async function runBootstrapSetupCommand(args = []) {
 
   launchGuidedSetupSession(options);
 }
-
