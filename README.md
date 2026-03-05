@@ -63,9 +63,8 @@ What it does:
 - Writes project-scoped Codex config at `.codex/config.toml` with:
   - `mcp_servers.playwright` (`npx @playwright/mcp@latest`)
   - `apps.playwright.tools.*.approval_mode = "approve"` for core browser actions
-  - `[[skills.config]]` entry pointing to local `./.codex/skills/setup-discord`
 - Marks current project as trusted in `~/.codex/config.toml` so project config is loaded.
-- Installs local `setup-discord` skill into `./.codex/skills/setup-discord/SKILL.md` (project-local, not global).
+- Installs local `setup-discord` skill into `./.agents/skills/setup-discord/SKILL.md` (project-local, not global).
 - Launches Codex with a guided setup prompt that runs `$setup-discord`.
 
 Useful flags:

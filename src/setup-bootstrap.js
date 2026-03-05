@@ -14,8 +14,6 @@ const PROJECT_CODEX_CONFIG_PATH = resolve(process.cwd(), '.codex', 'config.toml'
 const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'config.toml');
 const PROJECT_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap config';
 const PROJECT_CONFIG_END = '# END codex-everywhere bootstrap config';
-const PROJECT_SKILLS_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap skills';
-const PROJECT_SKILLS_CONFIG_END = '# END codex-everywhere bootstrap skills';
 
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -32,7 +30,7 @@ function normalizePathForToml(value) {
 }
 
 function resolveLocalSkillDir(cwd) {
-  return resolve(cwd, '.codex', 'skills', 'setup-discord');
+  return resolve(cwd, '.agents', 'skills', 'setup-discord');
 }
 
 function resolveLocalSkillFile(cwd) {
@@ -62,18 +60,6 @@ function buildProjectConfigBlock(cwd) {
     '[apps.playwright.tools.browser_close]',
     'approval_mode = "approve"',
     PROJECT_CONFIG_END,
-    '',
-  ].join('\n');
-}
-
-function buildProjectSkillsConfigBlock(cwd) {
-  const localSkillDir = normalizePathForToml(resolveLocalSkillDir(cwd));
-  return [
-    PROJECT_SKILLS_CONFIG_BEGIN,
-    '[[skills.config]]',
-    `path = ${tomlString(localSkillDir)}`,
-    'enabled = true',
-    PROJECT_SKILLS_CONFIG_END,
     '',
   ].join('\n');
 }
@@ -113,34 +99,6 @@ async function writeProjectConfigBlock(cwd) {
   await mkdir(dirname(PROJECT_CODEX_CONFIG_PATH), { recursive: true });
   await writeFile(PROJECT_CODEX_CONFIG_PATH, next, 'utf-8');
   console.log(`[codex-everywhere] wrote project config: ${PROJECT_CODEX_CONFIG_PATH}`);
-}
-
-async function writeProjectSkillsConfigBlock(cwd) {
-  const current = await readTextOrEmpty(PROJECT_CODEX_CONFIG_PATH);
-  const localSkillDir = normalizePathForToml(resolveLocalSkillDir(cwd));
-  const hasEquivalentSkillConfig =
-    current.includes(`path = ${tomlString(localSkillDir)}`) ||
-    current.includes('.codex/skills/setup-discord');
-  const block = buildProjectSkillsConfigBlock(cwd);
-
-  let next = current;
-  if (current.includes(PROJECT_SKILLS_CONFIG_BEGIN) && current.includes(PROJECT_SKILLS_CONFIG_END)) {
-    const pattern = new RegExp(
-      `${escapeRegExp(PROJECT_SKILLS_CONFIG_BEGIN)}[\\s\\S]*?${escapeRegExp(PROJECT_SKILLS_CONFIG_END)}\\n?`,
-      'm',
-    );
-    next = current.replace(pattern, block);
-  } else if (!current.trim()) {
-    next = `${block}`;
-  } else if (hasEquivalentSkillConfig) {
-    // Preserve existing skill config if user already manages it.
-    return;
-  } else {
-    next = `${current.trimEnd()}\n\n${block}`;
-  }
-
-  await mkdir(dirname(PROJECT_CODEX_CONFIG_PATH), { recursive: true });
-  await writeFile(PROJECT_CODEX_CONFIG_PATH, next, 'utf-8');
 }
 
 function replaceTrustInsideProjectTable(content, escapedProjectPath) {
@@ -313,14 +271,26 @@ function tryInstallTmux() {
 }
 
 async function ensureSetupDiscordSkillInstalled(cwd) {
+  const localSkillFile = resolveLocalSkillFile(cwd);
+  if (existsSync(localSkillFile)) {
+    console.log(`[codex-everywhere] local skill already present at ${localSkillFile}`);
+    return;
+  }
+
   if (!existsSync(SETUP_SKILL_SOURCE_PATH)) {
     throw new Error(`setup-discord skill source not found: ${SETUP_SKILL_SOURCE_PATH}`);
   }
 
-  const localSkillFile = resolveLocalSkillFile(cwd);
+  const sourceResolved = resolve(SETUP_SKILL_SOURCE_PATH);
+  const destinationResolved = resolve(localSkillFile);
+  if (sourceResolved === destinationResolved) {
+    console.log(`[codex-everywhere] local skill already present at ${localSkillFile}`);
+    return;
+  }
+
   await mkdir(dirname(localSkillFile), { recursive: true });
-  await copyFile(SETUP_SKILL_SOURCE_PATH, localSkillFile);
-  console.log(`[codex-everywhere] installed local skill at ${localSkillFile}`);
+  await copyFile(sourceResolved, destinationResolved);
+  console.log(`[codex-everywhere] installed local skill at ${destinationResolved}`);
 }
 
 function launchGuidedSetupSession(options) {
@@ -372,7 +342,6 @@ export async function runBootstrapSetupCommand(args = []) {
   }
 
   await writeProjectConfigBlock(cwd);
-  await writeProjectSkillsConfigBlock(cwd);
   await ensureProjectTrusted(cwd);
   await ensureSetupDiscordSkillInstalled(cwd);
 
