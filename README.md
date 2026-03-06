@@ -15,7 +15,7 @@ npm link
 codex-everywhere setup bootstrap
 ```
 
-During guided setup, complete any requested Discord login/CAPTCHA/re-auth steps.
+During guided setup, complete any requested Discord login/CAPTCHA/re-auth steps in the browser. The guided agent should continue automatically after the page reaches the expected post-auth state; no separate "I've done" message should be needed.
 
 After setup completes, type `!ce-new` in your control channel.
 
@@ -50,7 +50,7 @@ After setup completes, type `!ce-new` in your control channel.
 
 Required manual actions still include:
 - `/permissions` approval in Codex
-- Discord login / CAPTCHA / re-auth flows
+- Discord login / CAPTCHA / re-auth flows in the browser (the guided agent should resume automatically after the page clears the auth gate)
 
 ### Manual Discord Setup (`setup discord`)
 

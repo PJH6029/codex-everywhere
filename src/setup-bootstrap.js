@@ -518,7 +518,9 @@ export async function runBootstrapSetupCommand(args = []) {
   }
   console.log(`[codex-everywhere] verified Playwright skill: ${playwrightSkill.skillFile}`);
   console.log(`[codex-everywhere] verified Playwright CLI wrapper: ${playwrightSkill.wrapperPath}`);
-  console.log('[codex-everywhere] user actions still required during setup: /permissions approval, Discord login, CAPTCHA, and Discord re-auth prompts.');
+  console.log(
+    '[codex-everywhere] user actions still required during setup: /permissions approval plus any Discord login, CAPTCHA, or re-auth prompts. Guided setup should resume automatically after the browser page reaches the expected post-auth state.',
+  );
 
   if (!options.launch) {
     console.log('[codex-everywhere] launch skipped (`--no-launch`).');
