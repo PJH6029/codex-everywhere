@@ -5,6 +5,7 @@ Run Codex in tmux, bridge notifications/replies through Discord, and manage mult
 ## Quickstart
 
 Bootstrap will install the Playwright skill through Codex on first run if it is missing.
+Bootstrap uses `gpt-5.4` by default and falls back to `gpt-5.3-codex` only if `gpt-5.4` is unavailable.
 Make sure `npx` is available before running guided setup.
 
 ```bash
@@ -44,7 +45,7 @@ After setup completes, type `!ce-new` in your control channel.
 2. Verifies `npx` and, if needed, launches `codex exec` to run `$skill-installer playwright`.
 3. Marks this project as trusted in `~/.codex/config.toml`.
 4. Installs local setup skill at `./.agents/skills/setup-discord/SKILL.md` if missing.
-5. Launches Codex with guided setup prompt and default reasoning effort `xhigh`.
+5. Launches Codex with guided setup prompt, default model `gpt-5.4` (fallback `gpt-5.3-codex`), and default reasoning effort `xhigh`.
 
 Required manual actions still include:
 - `/permissions` approval in Codex
@@ -91,7 +92,7 @@ codex-everywhere setup bootstrap [options]
 
 - `--no-install`: do not auto-install missing prerequisites or the Playwright skill.
 - `--no-launch`: prepare only; do not launch Codex.
-- `--model <name>` or `-m <name>`: model override for guided session.
+- `--model <name>` or `-m <name>`: override the default bootstrap model selection.
 - `--reasoning-effort <level>` or `--effort <level>`: override bootstrap effort (default `xhigh`).
 - `--unsafe`: launch Codex with `--dangerously-bypass-approvals-and-sandbox`.
 

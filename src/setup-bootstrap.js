@@ -14,6 +14,8 @@ const BOOTSTRAP_GUIDED_PROMPT_TEMPLATE_PATH = fileURLToPath(
   new URL('../bootstrap/guided-setup-prompt.txt', import.meta.url),
 );
 const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'config.toml');
+const DEFAULT_SETUP_MODEL = 'gpt-5.4';
+const FALLBACK_SETUP_MODEL = 'gpt-5.3-codex';
 const BOOTSTRAP_REASONING_EFFORT = 'xhigh';
 
 function escapeRegExp(value) {
@@ -232,6 +234,98 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+function buildCodexArgsBase(options, cwd) {
+  const args = ['--cd', cwd];
+  args.push('-c', `model_reasoning_effort=${tomlString(options.reasoningEffort)}`);
+  if (options.model) {
+    args.push('--model', options.model);
+  }
+  return args;
+}
+
+function getCodexCommandOutput(result) {
+  return `${result.stdout || ''}\n${result.stderr || ''}`.trim();
+}
+
+function formatCodexFailure(result, fallbackMessage) {
+  const output = getCodexCommandOutput(result);
+  if (!output) {
+    if (result.error?.message) return result.error.message;
+    if (typeof result.status === 'number') return `${fallbackMessage} (exit ${result.status})`;
+    return fallbackMessage;
+  }
+  return `${fallbackMessage}: ${output}`;
+}
+
+function isModelUnavailableFailure(result) {
+  const output = getCodexCommandOutput(result).toLowerCase();
+  if (!output) return false;
+  return [
+    /model .* not found/,
+    /unknown model/,
+    /invalid model/,
+    /unsupported model/,
+    /unrecognized model/,
+    /model .* does not exist/,
+    /model .* not available/,
+    /model .* not accessible/,
+    /do not have access/,
+    /don't have access/,
+    /not authorized to use model/,
+  ].some((pattern) => pattern.test(output));
+}
+
+function probeCodexModel(options, cwd, model) {
+  const probeOptions = { ...options, model };
+  const args = [
+    'exec',
+    ...buildCodexArgsBase(probeOptions, cwd),
+    '--sandbox',
+    'read-only',
+    '--color',
+    'never',
+    '--ephemeral',
+    'Reply with exactly OK.',
+  ];
+  return runCommand('codex', args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 60000,
+  });
+}
+
+function resolveBootstrapModel(options, cwd) {
+  if (options.model) {
+    return options.model;
+  }
+
+  const preferredProbe = probeCodexModel(options, cwd, DEFAULT_SETUP_MODEL);
+  if (!preferredProbe.error && preferredProbe.status === 0) {
+    return DEFAULT_SETUP_MODEL;
+  }
+
+  if (!isModelUnavailableFailure(preferredProbe)) {
+    throw new Error(
+      formatCodexFailure(preferredProbe, `failed to validate bootstrap model ${DEFAULT_SETUP_MODEL}`),
+    );
+  }
+
+  console.log(
+    `[codex-everywhere] default setup model ${DEFAULT_SETUP_MODEL} is unavailable; falling back to ${FALLBACK_SETUP_MODEL}.`,
+  );
+
+  const fallbackProbe = probeCodexModel(options, cwd, FALLBACK_SETUP_MODEL);
+  if (!fallbackProbe.error && fallbackProbe.status === 0) {
+    return FALLBACK_SETUP_MODEL;
+  }
+
+  throw new Error(
+    formatCodexFailure(
+      fallbackProbe,
+      `failed to validate fallback bootstrap model ${FALLBACK_SETUP_MODEL}`,
+    ),
+  );
+}
+
 function codexSupportsNoAltScreen() {
   const result = spawnSync('codex', ['--help'], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -287,11 +381,7 @@ function tryInstallTmux() {
 }
 
 function runCodexExec(options, cwd, prompt, description) {
-  const args = ['exec', '--cd', cwd];
-  args.push('-c', `model_reasoning_effort=${tomlString(options.reasoningEffort)}`);
-  if (options.model) {
-    args.push('--model', options.model);
-  }
+  const args = ['exec', ...buildCodexArgsBase(options, cwd)];
   if (options.unsafe) {
     args.push('--dangerously-bypass-approvals-and-sandbox');
   } else {
@@ -360,15 +450,12 @@ async function ensureSetupDiscordSkillInstalled(cwd) {
   console.log(`[codex-everywhere] installed local skill at ${destinationResolved}`);
 }
 
-function launchGuidedSetupSession(options, prompt) {
+function launchGuidedSetupSession(options, cwd, prompt) {
   const args = [];
   if (codexSupportsNoAltScreen()) {
     args.push('--no-alt-screen');
   }
-  args.push('-c', `model_reasoning_effort=${tomlString(options.reasoningEffort)}`);
-  if (options.model) {
-    args.push('--model', options.model);
-  }
+  args.push(...buildCodexArgsBase(options, cwd));
   if (options.unsafe) {
     args.push('--dangerously-bypass-approvals-and-sandbox');
   } else {
@@ -405,11 +492,30 @@ export async function runBootstrapSetupCommand(args = []) {
     }
   }
 
-  const playwrightSkill = ensurePlaywrightSkillAvailable(options, cwd);
+  const initialPlaywrightSkill = getPlaywrightSkillStatus();
+  let bootstrapOptions = options;
+  if (!initialPlaywrightSkill.installed && options.installMissing) {
+    bootstrapOptions = {
+      ...options,
+      model: resolveBootstrapModel(options, cwd),
+    };
+  }
+
+  const playwrightSkill = ensurePlaywrightSkillAvailable(bootstrapOptions, cwd);
   await ensureProjectTrusted(cwd);
   await ensureSetupDiscordSkillInstalled(cwd);
 
+  if (options.launch && !bootstrapOptions.model) {
+    bootstrapOptions = {
+      ...options,
+      model: resolveBootstrapModel(options, cwd),
+    };
+  }
+
   console.log('[codex-everywhere] bootstrap preparation complete.');
+  if (bootstrapOptions.model) {
+    console.log(`[codex-everywhere] using bootstrap model: ${bootstrapOptions.model}`);
+  }
   console.log(`[codex-everywhere] verified Playwright skill: ${playwrightSkill.skillFile}`);
   console.log(`[codex-everywhere] verified Playwright CLI wrapper: ${playwrightSkill.wrapperPath}`);
   console.log('[codex-everywhere] user actions still required during setup: /permissions approval, Discord login, CAPTCHA, and Discord re-auth prompts.');
@@ -420,5 +526,5 @@ export async function runBootstrapSetupCommand(args = []) {
     return;
   }
 
-  launchGuidedSetupSession(options, guidedPrompt);
+  launchGuidedSetupSession(bootstrapOptions, cwd, guidedPrompt);
 }
