@@ -3,6 +3,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { findActiveSessionById, removeActiveSession } from './active-sessions.js';
+import { startCodexSessionCommentaryRelay } from './codex-session-commentary.js';
 import { loadAppConfig } from './config.js';
 import { deleteDiscordChannel, sendDiscordMessage } from './discord.js';
 import { notifyEvent } from './notify.js';
@@ -195,6 +196,7 @@ async function main() {
   }
 
   const codexArgs = ['-c', notifyConfig, ...passthrough];
+  const relayStartedAtMs = Date.now();
 
   const child = spawn(codexBinary, codexArgs, {
     cwd: parsed.cwd,
@@ -207,10 +209,20 @@ async function main() {
     },
   });
 
+  const commentaryRelay = startCodexSessionCommentaryRelay({
+    sessionId,
+    startedAtMs: relayStartedAtMs,
+    paneId: process.env.TMUX_PANE || '',
+    tmuxSessionName: process.env.CODEX_EVERYWHERE_TMUX_SESSION || '',
+    projectPath: parsed.cwd,
+    channelId,
+  });
+
   child.on('exit', async (code, signal) => {
     const reason = signal ? `signal:${signal}` : `exit:${code ?? 0}`;
     const activeSession = await findActiveSessionById(sessionId).catch(() => null);
 
+    await commentaryRelay.stop({ flush: true }).catch(() => {});
     await removeActiveSession(sessionId).catch(() => {});
 
     await notifyWithRetry('session-end', {
@@ -233,6 +245,7 @@ async function main() {
 
   child.on('error', async (error) => {
     const activeSession = await findActiveSessionById(sessionId).catch(() => null);
+    await commentaryRelay.stop({ flush: false }).catch(() => {});
     await removeActiveSession(sessionId).catch(() => {});
     await cleanupManagedSessionChannelOnExit(activeSession, 'spawn-error').catch(() => {});
     console.error(`[codex-everywhere] failed to start codex: ${error instanceof Error ? error.message : String(error)}`);

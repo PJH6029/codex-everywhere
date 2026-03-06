@@ -35,6 +35,16 @@ function resolveChannelId(config, options = {}) {
   return String(config.channelId || '').trim();
 }
 
+function resolveMention(config, options = {}) {
+  if (typeof options.mention === 'string') {
+    return options.mention.trim();
+  }
+  if (options.mention === true) {
+    return String(config.mention || '').trim();
+  }
+  return '';
+}
+
 function normalizeApiErrorFragment(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -46,7 +56,7 @@ function normalizeApiErrorFragment(value) {
 }
 
 export async function sendDiscordMessage(config, options) {
-  const { mention } = config;
+  const mention = resolveMention(config, options);
   const channelId = resolveChannelId(config, options);
   const tokens = tokenCandidates(config);
 

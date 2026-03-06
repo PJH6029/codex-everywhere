@@ -248,6 +248,7 @@ export function loadAppConfig() {
     events: {
       sessionStart: eventEnabled(events, 'session-start', true),
       sessionEnd: eventEnabled(events, 'session-end', true),
+      progressUpdate: eventEnabled(events, 'progress-update', true),
       turnComplete: eventEnabled(events, 'turn-complete', true),
       userInput:
         eventEnabled(events, 'user-input', true) &&
