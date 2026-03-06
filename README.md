@@ -34,6 +34,7 @@ After setup completes, type `!ce-new` in your control channel.
 - Node.js 20+
 - `tmux`
 - Codex CLI (`npm i -g @openai/codex`)
+- Playwright CLI (`npm i -g @playwright/cli@latest`)
 - `npx` available for the Playwright skill wrapper
 - Discord bot token and permissions in your server
 
@@ -169,6 +170,8 @@ Key modules:
   - `~/.codex-everywhere/config.json`
   - `~/.codex-everywhere/state/*`
   - `~/.codex-everywhere/logs/*`
+
+`setup discord` stores the Discord bot token, control channel id, resolved provisioning guild id, and authorized user ids in `~/.codex-everywhere/config.json`.
 
 ## Troubleshooting
 

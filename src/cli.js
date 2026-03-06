@@ -129,15 +129,20 @@ function inferCliProvisionChannelName(config) {
 }
 
 async function resolveControlGuildId(config) {
+  const configuredGuildId = String(config?.discordProvisioning?.guildId || '').trim();
   const controlChannelId = String(config?.discordBot?.channelId || '').trim();
-  if (!controlChannelId) return '';
+  if (!controlChannelId) return configuredGuildId;
 
   const lookedUp = await getDiscordChannel(config.discordBot, controlChannelId).catch(() => ({
     success: false,
     error: 'discord_control_channel_lookup_failed',
   }));
-  if (!lookedUp.success) return '';
-  return String(lookedUp?.channel?.guild_id || '').trim();
+  if (lookedUp.success) {
+    const lookedUpGuildId = String(lookedUp?.channel?.guild_id || '').trim();
+    if (lookedUpGuildId) return lookedUpGuildId;
+  }
+
+  return configuredGuildId;
 }
 
 async function makeUniqueDiscordChannelName(config, guildId, desiredName) {

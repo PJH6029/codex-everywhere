@@ -285,7 +285,7 @@ async function resolveControlChannelId(parsed, discordConfig) {
   );
 }
 
-function buildNotificationsPatch(parsed, authorizedUserIds, controlChannelId) {
+function buildNotificationsPatch(parsed, authorizedUserIds, controlChannelId, guildId) {
   const mentionUserId = parsed.mentionUserId || authorizedUserIds[0] || '';
 
   return {
@@ -300,6 +300,7 @@ function buildNotificationsPatch(parsed, authorizedUserIds, controlChannelId) {
       mention: mentionUserId ? `<@${mentionUserId}>` : '',
       provisioning: {
         enabled: parsed.provisionEnabled,
+        guildId,
         channelPrefix: parsed.provisionPrefix,
         categoryId: parsed.provisionCategoryId || '',
         pollIntervalMs: parsed.pollIntervalMs,
@@ -393,6 +394,12 @@ export async function runDiscordSetupCommand(args = []) {
       `Discord control channel validation failed (${controlChannelId}): ${channelCheck.error || 'discord_channel_lookup_failed'}`,
     );
   }
+  const resolvedGuildId = String(channelCheck?.channel?.guild_id || '').trim();
+  if (!DISCORD_ID_PATTERN.test(resolvedGuildId)) {
+    throw new Error(
+      `Discord control channel validation failed (${controlChannelId}): channel is missing a valid guild id`,
+    );
+  }
 
   const effectiveDiscordConfig = {
     ...discordConfig,
@@ -403,7 +410,12 @@ export async function runDiscordSetupCommand(args = []) {
     ...parsed,
     controlChannelId,
   }, effectiveDiscordConfig);
-  const patch = buildNotificationsPatch(parsed, authorizedUserIds, controlChannelId);
+  const patch = buildNotificationsPatch(
+    parsed,
+    authorizedUserIds,
+    controlChannelId,
+    resolvedGuildId,
+  );
   const current = await readExistingConfig(parsed.configPath);
   const merged = mergeNotifications(current, patch);
   await writeConfig(parsed.configPath, merged);
@@ -428,6 +440,7 @@ export async function runDiscordSetupCommand(args = []) {
 
   console.log('[codex-everywhere] Discord setup written successfully');
   console.log(`[codex-everywhere] config: ${parsed.configPath}`);
+  console.log(`[codex-everywhere] guild: ${resolvedGuildId}`);
   console.log(`[codex-everywhere] control channel: ${controlChannelId}`);
   console.log(`[codex-everywhere] authorized users: ${authorizedUserIds.join(', ')}`);
   console.log('[codex-everywhere] next: codex-everywhere daemon stop && codex-everywhere daemon start');

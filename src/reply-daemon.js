@@ -2152,24 +2152,36 @@ async function seedDiscordCursorIfNeeded(config, state, channelId) {
 }
 
 async function ensureProvisionGuildId(config, state) {
-  if (state.provisionGuildId) return state.provisionGuildId;
+  const configuredGuildId = String(config?.discordProvisioning?.guildId || '').trim();
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
 
-  const controlChannelResult = await getDiscordChannel(config.discordBot, config.discordBot.channelId);
-  if (!controlChannelResult.success) {
-    state.errors += 1;
-    state.lastError = controlChannelResult.error || 'discord_control_channel_lookup_failed';
-    return '';
+  if (controlChannelId) {
+    const controlChannelResult = await getDiscordChannel(config.discordBot, controlChannelId);
+    if (controlChannelResult.success) {
+      const guildId = String(controlChannelResult?.channel?.guild_id || '');
+      if (guildId) {
+        state.provisionGuildId = guildId;
+        return guildId;
+      }
+    } else if (!configuredGuildId) {
+      state.provisionGuildId = '';
+      state.errors += 1;
+      state.lastError = controlChannelResult.error || 'discord_control_channel_lookup_failed';
+      return '';
+    }
   }
 
-  const guildId = String(controlChannelResult?.channel?.guild_id || '');
-  if (!guildId) {
-    state.errors += 1;
-    state.lastError = 'discord_control_channel_missing_guild';
-    return '';
+  if (configuredGuildId) {
+    state.provisionGuildId = configuredGuildId;
+    return configuredGuildId;
   }
 
-  state.provisionGuildId = guildId;
-  return guildId;
+  state.provisionGuildId = '';
+  state.errors += 1;
+  state.lastError = controlChannelId
+    ? 'discord_control_channel_missing_guild'
+    : 'discord_control_channel_lookup_failed';
+  return '';
 }
 
 async function provisionSessionsForNewChannels(config, state, activeSessions) {

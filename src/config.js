@@ -106,6 +106,15 @@ function resolveDiscordProvisioningConfig(notifications, hasDiscordBot) {
     parseBoolean(process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_ENABLED, file?.enabled !== false) &&
     hasDiscordBot;
 
+  const envGuildId = typeof process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_GUILD_ID === 'string'
+    ? process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_GUILD_ID.trim()
+    : '';
+  const fileGuildId = typeof file?.guildId === 'string'
+    ? file.guildId.trim()
+    : '';
+  const guildIdCandidate = envGuildId || fileGuildId;
+  const guildId = /^\d{17,20}$/.test(guildIdCandidate) ? guildIdCandidate : '';
+
   const prefixRaw = typeof process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_PREFIX === 'string'
     ? process.env.CODEX_EVERYWHERE_DISCORD_PROVISION_PREFIX
     : file?.channelPrefix;
@@ -136,6 +145,7 @@ function resolveDiscordProvisioningConfig(notifications, hasDiscordBot) {
 
   return {
     enabled,
+    guildId,
     channelPrefix,
     categoryId,
     pollIntervalMs,
