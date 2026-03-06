@@ -5,3 +5,4 @@ node_modules/
 .codex
 .codex-everywhere
 output/
+.playwright-cli/
