@@ -36,7 +36,7 @@ import {
   sanitizeName,
   switchClientSession,
 } from './tmux.js';
-import { appendJsonl, resolveFromCwd, shellEscape, sleep, todayFileName } from './utils.js';
+import { appendJsonl, projectLogPath, shellEscape, sleep } from './utils.js';
 
 const HELP = `codex-everywhere
 
@@ -598,7 +598,7 @@ async function notifyWithRetry(event, payload, options = {}) {
   const attempts = Math.max(1, Number.parseInt(String(options.attempts ?? 3), 10) || 3);
   const baseDelayMs = Math.max(100, Number.parseInt(String(options.baseDelayMs ?? 700), 10) || 700);
   const projectPath = payload.projectPath || process.cwd();
-  const logPath = resolveFromCwd(projectPath, '.codex-everywhere', 'logs', todayFileName('codex-everywhere-notify'));
+  const logPath = projectLogPath(projectPath, 'codex-everywhere-notify');
 
   let lastResult = { success: false, error: 'unknown' };
 

@@ -171,7 +171,7 @@ Key modules:
 - codex-everywhere runtime/config:
   - `~/.codex-everywhere/config.json`
   - `~/.codex-everywhere/state/*`
-  - `~/.codex-everywhere/logs/*`
+  - `~/.codex-everywhere/logs/<project-slug>/*`
 
 `setup discord` stores the Discord bot token, control channel id, resolved provisioning guild id, and authorized user ids in `~/.codex-everywhere/config.json`.
 

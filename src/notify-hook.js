@@ -7,9 +7,8 @@ import {
 } from './input-sync.js';
 import {
   appendJsonl,
-  resolveFromCwd,
+  projectLogPath,
   safeString,
-  todayFileName,
 } from './utils.js';
 import { notifyEvent } from './notify.js';
 
@@ -134,7 +133,7 @@ async function main() {
   const inputMessages = readInputMessages(payload);
   const latestInput = normalizeUserInputForSync(inputMessages.slice(-1)[0] || '');
 
-  const logPath = resolveFromCwd(projectPath, '.codex-everywhere', 'logs', todayFileName('codex-everywhere-turns'));
+  const logPath = projectLogPath(projectPath, 'codex-everywhere-turns');
 
   await appendJsonl(logPath, {
     timestamp: new Date().toISOString(),

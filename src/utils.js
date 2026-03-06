@@ -1,6 +1,8 @@
+import { createHash } from 'crypto';
 import { mkdir, readFile, rename, stat, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
+import { GLOBAL_LOG_DIR } from './constants.js';
 
 export function safeString(value) {
   return typeof value === 'string' ? value : '';
@@ -54,6 +56,27 @@ export function nowIso() {
 
 export function todayFileName(prefix) {
   return `${prefix}-${new Date().toISOString().slice(0, 10)}.jsonl`;
+}
+
+function sanitizePathSegment(value, fallback = 'project') {
+  const sanitized = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 40);
+  return sanitized || fallback;
+}
+
+export function projectSlug(projectPath) {
+  const resolvedPath = resolve(String(projectPath || process.cwd()));
+  const base = sanitizePathSegment(basename(resolvedPath), 'project');
+  const hash = createHash('sha1').update(resolvedPath).digest('hex').slice(0, 8);
+  return `${base}-${hash}`;
+}
+
+export function projectLogPath(projectPath, prefix) {
+  return join(GLOBAL_LOG_DIR, projectSlug(projectPath), todayFileName(prefix));
 }
 
 export function shellEscape(value) {

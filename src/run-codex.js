@@ -7,7 +7,7 @@ import { startCodexSessionCommentaryRelay } from './codex-session-commentary.js'
 import { loadAppConfig } from './config.js';
 import { deleteDiscordChannel, sendDiscordMessage } from './discord.js';
 import { notifyEvent } from './notify.js';
-import { appendJsonl, resolveFromCwd, sleep, todayFileName } from './utils.js';
+import { appendJsonl, projectLogPath, sleep } from './utils.js';
 
 function parseArgs(argv) {
   const args = [...argv];
@@ -66,7 +66,7 @@ async function notifyWithRetry(event, payload, options = {}) {
   const attempts = Math.max(1, Number.parseInt(String(options.attempts ?? 3), 10) || 3);
   const baseDelayMs = Math.max(100, Number.parseInt(String(options.baseDelayMs ?? 700), 10) || 700);
   const projectPath = payload.projectPath || process.cwd();
-  const logPath = resolveFromCwd(projectPath, '.codex-everywhere', 'logs', todayFileName('codex-everywhere-notify'));
+  const logPath = projectLogPath(projectPath, 'codex-everywhere-notify');
 
   let lastResult = { success: false, error: 'unknown' };
 
