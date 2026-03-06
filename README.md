@@ -4,8 +4,8 @@ Run Codex in tmux, bridge notifications/replies through Discord, and manage mult
 
 ## Quickstart
 
-Bootstrap uses the installed Playwright skill at `~/.codex/skills/playwright`.
-Make sure the skill is present and `npx` is available before running guided setup.
+Bootstrap will install the Playwright skill through Codex on first run if it is missing.
+Make sure `npx` is available before running guided setup.
 
 ```bash
 git clone https://github.com/PJH6029/codex-everywhere.git
@@ -33,7 +33,7 @@ After setup completes, type `!ce-new` in your control channel.
 - Node.js 20+
 - `tmux`
 - Codex CLI (`npm i -g @openai/codex`)
-- Playwright skill installed at `~/.codex/skills/playwright`
+- `npx` available for the Playwright skill wrapper
 - Discord bot token and permissions in your server
 
 ### Bootstrap Flow (`setup bootstrap`)
@@ -41,7 +41,7 @@ After setup completes, type `!ce-new` in your control channel.
 `codex-everywhere setup bootstrap` (alias: `setup auto`) does the following:
 
 1. Verifies `codex` and `tmux` (auto-installs if missing unless disabled).
-2. Verifies `npx` and the installed Playwright skill wrapper.
+2. Verifies `npx` and, if needed, launches `codex exec` to run `$skill-installer playwright`.
 3. Marks this project as trusted in `~/.codex/config.toml`.
 4. Installs local setup skill at `./.agents/skills/setup-discord/SKILL.md` if missing.
 5. Launches Codex with guided setup prompt and default reasoning effort `xhigh`.
@@ -89,7 +89,7 @@ Pass-through args are forwarded to Codex launch.
 codex-everywhere setup bootstrap [options]
 ```
 
-- `--no-install`: do not auto-install missing prerequisites.
+- `--no-install`: do not auto-install missing prerequisites or the Playwright skill.
 - `--no-launch`: prepare only; do not launch Codex.
 - `--model <name>` or `-m <name>`: model override for guided session.
 - `--reasoning-effort <level>` or `--effort <level>`: override bootstrap effort (default `xhigh`).
@@ -180,7 +180,7 @@ Key modules:
 - Channel deletion fails with permission error:
   - Grant bot `Manage Channels` permission.
 - Browser automation cannot start:
-  - Confirm `npx` is available and `~/.codex/skills/playwright/scripts/playwright_cli.sh` exists.
+  - Confirm `npx` is available and rerun `codex-everywhere setup bootstrap` without `--no-install` so it can reinstall the Playwright skill if needed.
 
 ## Development
 

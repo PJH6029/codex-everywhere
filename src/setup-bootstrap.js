@@ -53,6 +53,16 @@ function resolveGlobalPlaywrightWrapperPath() {
   return resolve(resolveGlobalPlaywrightSkillDir(), 'scripts', 'playwright_cli.sh');
 }
 
+function getPlaywrightSkillStatus() {
+  const skillFile = resolveGlobalPlaywrightSkillFile();
+  const wrapperPath = resolveGlobalPlaywrightWrapperPath();
+  return {
+    skillFile,
+    wrapperPath,
+    installed: existsSync(skillFile) && existsSync(wrapperPath),
+  };
+}
+
 async function readTextOrEmpty(path) {
   try {
     return await readFile(path, 'utf-8');
@@ -276,22 +286,55 @@ function tryInstallTmux() {
   return false;
 }
 
-function ensurePlaywrightSkillAvailable() {
+function runCodexExec(options, cwd, prompt, description) {
+  const args = ['exec', '--cd', cwd];
+  args.push('-c', `model_reasoning_effort=${tomlString(options.reasoningEffort)}`);
+  if (options.model) {
+    args.push('--model', options.model);
+  }
+  if (options.unsafe) {
+    args.push('--dangerously-bypass-approvals-and-sandbox');
+  } else {
+    args.push('--sandbox', 'danger-full-access');
+  }
+  args.push(prompt);
+
+  console.log(`[codex-everywhere] ${description}`);
+  const result = runCommand('codex', args);
+  if (result.error) {
+    throw new Error(result.error.message || 'failed to launch codex exec');
+  }
+  if (typeof result.status === 'number' && result.status !== 0) {
+    throw new Error(`codex exec exited with status ${result.status}`);
+  }
+}
+
+function ensurePlaywrightSkillAvailable(options, cwd) {
   if (!commandExists('npx')) {
     throw new Error(
-      'npx is required for the installed Playwright skill. Install Node.js/npm, then rerun `codex-everywhere setup bootstrap`.',
+      'npx is required for Playwright skill installation and execution. Install Node.js/npm, then rerun `codex-everywhere setup bootstrap`.',
     );
   }
 
-  const skillFile = resolveGlobalPlaywrightSkillFile();
-  const wrapperPath = resolveGlobalPlaywrightWrapperPath();
-  if (!existsSync(skillFile) || !existsSync(wrapperPath)) {
+  let status = getPlaywrightSkillStatus();
+  if (!status.installed && options.installMissing) {
+    const prompt = [
+      'Run `$skill-installer playwright` to install the Playwright skill for this machine.',
+      `Treat the task as complete only when both \`${status.skillFile}\` and \`${status.wrapperPath}\` exist.`,
+      'If the skill is already installed, verify the files instead of reinstalling.',
+      'If installation fails, explain the blocker clearly before exiting.',
+    ].join(' ');
+    runCodexExec(options, cwd, prompt, 'Playwright skill not found; launching Codex to install it...');
+    status = getPlaywrightSkillStatus();
+  }
+
+  if (!status.installed) {
     throw new Error(
-      `installed Playwright skill not found. Expected ${skillFile} and ${wrapperPath}. Install the skill in ~/.codex/skills/playwright, then rerun \`codex-everywhere setup bootstrap\`.`,
+      `installed Playwright skill not found. Expected ${status.skillFile} and ${status.wrapperPath}. Install it with \`$skill-installer playwright\` (or rerun without \`--no-install\`), then rerun \`codex-everywhere setup bootstrap\`.`,
     );
   }
 
-  return { skillFile, wrapperPath };
+  return status;
 }
 
 async function ensureSetupDiscordSkillInstalled(cwd) {
@@ -362,7 +405,7 @@ export async function runBootstrapSetupCommand(args = []) {
     }
   }
 
-  const playwrightSkill = ensurePlaywrightSkillAvailable();
+  const playwrightSkill = ensurePlaywrightSkillAvailable(options, cwd);
   await ensureProjectTrusted(cwd);
   await ensureSetupDiscordSkillInstalled(cwd);
 
