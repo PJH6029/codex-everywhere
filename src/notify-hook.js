@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
-import { createHash } from 'crypto';
-import { INPUT_SYNC_STATE_PATH } from './constants.js';
+import {
+  consumeInjectedUserInput,
+  normalizeUserInputForSync,
+  shouldForwardUserInput,
+} from './input-sync.js';
 import {
   appendJsonl,
-  readJson,
   resolveFromCwd,
   safeString,
   todayFileName,
-  writeJsonAtomic,
 } from './utils.js';
 import { notifyEvent } from './notify.js';
 
@@ -95,54 +96,8 @@ function readInputMessages(payload) {
   return [];
 }
 
-function normalizeUserInputForSync(text) {
-  return String(text || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .trim();
-}
-
-function isDiscordInjectedInput(text) {
+function hasLegacyDiscordReplyPrefix(text) {
   return /^\[reply:discord\]\s*/i.test(String(text || '').trim());
-}
-
-function inputFingerprint(sessionId, input) {
-  return createHash('sha256')
-    .update(`${sessionId}\n${input}`)
-    .digest('hex')
-    .slice(0, 24);
-}
-
-async function shouldForwardUserInput(sessionId, input) {
-  const state = await readJson(INPUT_SYNC_STATE_PATH, { bySession: {} });
-  const bySession = state?.bySession && typeof state.bySession === 'object' ? state.bySession : {};
-
-  const fingerprint = inputFingerprint(sessionId, input);
-  const previous = String(bySession?.[sessionId]?.fingerprint || '');
-  if (previous === fingerprint) {
-    return false;
-  }
-
-  const nextBySession = {
-    ...bySession,
-    [sessionId]: {
-      fingerprint,
-      updatedAt: new Date().toISOString(),
-    },
-  };
-
-  const sessionIds = Object.keys(nextBySession);
-  if (sessionIds.length > 400) {
-    const sorted = sessionIds
-      .map((id) => ({ id, updatedAt: String(nextBySession[id]?.updatedAt || '') }))
-      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
-    for (let idx = 0; idx < sorted.length - 400; idx += 1) {
-      delete nextBySession[sorted[idx].id];
-    }
-  }
-
-  await writeJsonAtomic(INPUT_SYNC_STATE_PATH, { bySession: nextBySession }).catch(() => {});
-  return true;
 }
 
 async function main() {
@@ -192,7 +147,12 @@ async function main() {
     output_preview: assistantMessage.slice(0, 300),
   }).catch(() => {});
 
-  if (latestInput && !isDiscordInjectedInput(latestInput)) {
+  const wasInjectedDiscordReply = latestInput
+    ? await consumeInjectedUserInput(sessionId, latestInput)
+    : false;
+  const hasLegacyReplyPrefix = hasLegacyDiscordReplyPrefix(latestInput);
+
+  if (latestInput && !wasInjectedDiscordReply && !hasLegacyReplyPrefix) {
     const shouldForward = await shouldForwardUserInput(sessionId, latestInput);
     if (shouldForward) {
       await notifyEvent('user-input', {

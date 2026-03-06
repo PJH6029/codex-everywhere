@@ -312,7 +312,7 @@ function buildNotificationsPatch(parsed, authorizedUserIds, controlChannelId, gu
       authorizedDiscordUserIds: authorizedUserIds,
       pollIntervalMs: parsed.pollIntervalMs,
       rateLimitPerMinute: parsed.rateLimitPerMinute,
-      includePrefix: true,
+      includePrefix: false,
       autoContinueOnDeny: true,
       onDenyMessage:
         'User denied this command. Continue without running it and choose a safe alternative.',

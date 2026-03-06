@@ -40,6 +40,7 @@ import {
   sendLiteralToPane,
 } from './tmux.js';
 import { notifyEvent } from './notify.js';
+import { markInjectedUserInput } from './input-sync.js';
 import {
   clampInt,
   ensureDir,
@@ -1354,7 +1355,11 @@ async function injectReplyToPane(mapping, text, config) {
   const prefix = config.reply.includePrefix ? '[reply:discord] ' : '';
   const sanitized = sanitizeReplyInput(`${prefix}${text}`);
   const truncated = truncate(sanitized, config.reply.maxMessageLength);
-  return sendLiteralToPane(mapping.tmuxPaneId, truncated, true, 1);
+  const ok = sendLiteralToPane(mapping.tmuxPaneId, truncated, true, 1);
+  if (ok && mapping?.sessionId) {
+    await markInjectedUserInput(mapping.sessionId, truncated);
+  }
+  return ok;
 }
 
 async function injectApprovalDecision(mapping, text) {

@@ -188,9 +188,10 @@ function resolveReplyConfig(notifications, hasDiscordBot) {
     4000,
   );
 
-  const includePrefix =
-    process.env.CODEX_EVERYWHERE_REPLY_INCLUDE_PREFIX !== 'false' &&
-    replyRaw?.includePrefix !== false;
+  const envIncludePrefix = parseOptionalBoolean(process.env.CODEX_EVERYWHERE_REPLY_INCLUDE_PREFIX);
+  const includePrefix = typeof envIncludePrefix === 'boolean'
+    ? envIncludePrefix
+    : false;
 
   const autoContinueOnDeny =
     process.env.CODEX_EVERYWHERE_REPLY_AUTO_CONTINUE_ON_DENY !== 'false' &&
