@@ -32,11 +32,16 @@ Target defaults:
 2. Ensure package is installed and runnable.
    - In repo: `npm link`
    - Sanity: `codex-everywhere --help`
-3. Ensure Playwright MCP browser extension is installed in Chrome/Edge/Chromium:
-   - Install **Playwright MCP Bridge**: `https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm`
-   - If missing, pause automation until user installs it.
-4. Open Discord Developer Portal with Playwright MCP:
-   - `https://discord.com/developers/applications`
+3. Use the installed `$playwright` skill for browser automation.
+   - Follow its prerequisite check first: `command -v npx >/dev/null 2>&1`
+   - Set the wrapper path:
+     - `export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"`
+     - `export PWCLI="$CODEX_HOME/skills/playwright/scripts/playwright_cli.sh"`
+   - Sanity-check the wrapper: `"$PWCLI" --help`
+   - If `npx` or the wrapper is missing, pause and ask the user to install the Playwright skill in `~/.codex/skills/playwright`.
+4. Open Discord Developer Portal with Playwright CLI.
+   - `"$PWCLI" open https://discord.com/developers/applications --headed`
+   - Use `"$PWCLI" snapshot` before clicking and re-snapshot after navigation or major DOM changes.
    - Pause for user login / 2FA when needed.
 5. Create app + bot (unless already present):
    - New Application (name: `codex-everywhere` or user choice)
@@ -54,7 +59,7 @@ Target defaults:
      - `Manage Channels`
    - Open generated URL and complete invite
    - If CAPTCHA appears, user must solve it.
-7. Create server/guild (Playwright on Discord Web):
+7. Create server/guild (Playwright CLI on Discord Web):
    - Create server named `codex-everywhere-server`.
    - Keep the default first text channel (`일반` or `general` depending on locale).
 8. Prepare control channel:
@@ -71,6 +76,7 @@ Target defaults:
 
 ## Notes
 
+- Use the Playwright CLI skill flow for this setup.
 - If `discord_http_403_*missing_permissions*` appears, fix channel/category overrides for bot role.
 - If plain channel messages arrive empty, verify **Message Content Intent** is enabled and restart daemon.
 - Discord cannot force UI focus switching; use channel mention/link messages.

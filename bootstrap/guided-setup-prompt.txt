@@ -1,6 +1,6 @@
 Run $setup-discord and complete codex-everywhere Discord setup end-to-end.
-Before browser automation, verify Playwright MCP Bridge extension is installed in the user's Chrome/Edge/Chromium.
-If missing, ask the user to install it from: https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm
+Use the installed $playwright skill for all browser automation in this flow.
+Before browser automation, follow the playwright skill prerequisite check and verify npx plus the wrapper script are available.
 Target server name: codex-everywhere-server.
 Use default control channel (일반 in Korean locale, general in English locale).
 If Discord requests login, CAPTCHA, or re-authentication, ask the user to complete it.

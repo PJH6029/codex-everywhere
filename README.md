@@ -4,8 +4,8 @@ Run Codex in tmux, bridge notifications/replies through Discord, and manage mult
 
 ## Quickstart
 
-Install Playwright MCP Bridge first (required for browser automation in setup):
-- https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm
+Bootstrap uses the installed Playwright skill at `~/.codex/skills/playwright`.
+Make sure the skill is present and `npx` is available before running guided setup.
 
 ```bash
 git clone https://github.com/PJH6029/codex-everywhere.git
@@ -33,7 +33,7 @@ After setup completes, type `!ce-new` in your control channel.
 - Node.js 20+
 - `tmux`
 - Codex CLI (`npm i -g @openai/codex`)
-- Chrome/Edge/Chromium with Playwright MCP Bridge extension installed
+- Playwright skill installed at `~/.codex/skills/playwright`
 - Discord bot token and permissions in your server
 
 ### Bootstrap Flow (`setup bootstrap`)
@@ -41,15 +41,14 @@ After setup completes, type `!ce-new` in your control channel.
 `codex-everywhere setup bootstrap` (alias: `setup auto`) does the following:
 
 1. Verifies `codex` and `tmux` (auto-installs if missing unless disabled).
-2. Writes project `.codex/config.toml` with Playwright MCP extension config and browser tool approvals.
+2. Verifies `npx` and the installed Playwright skill wrapper.
 3. Marks this project as trusted in `~/.codex/config.toml`.
 4. Installs local setup skill at `./.agents/skills/setup-discord/SKILL.md` if missing.
 5. Launches Codex with guided setup prompt and default reasoning effort `xhigh`.
 
 Required manual actions still include:
-- Playwright extension install / first connection approval
 - `/permissions` approval in Codex
-- Discord CAPTCHA / re-auth flows
+- Discord login / CAPTCHA / re-auth flows
 
 ### Manual Discord Setup (`setup discord`)
 
@@ -162,7 +161,6 @@ Key modules:
 ## Files and State
 
 - Project files written by bootstrap:
-  - `./.codex/config.toml`
   - `./.agents/skills/setup-discord/SKILL.md` (if missing)
 - Global Codex trust:
   - `~/.codex/config.toml`
@@ -181,8 +179,8 @@ Key modules:
   - Enable **Message Content Intent** in Discord bot settings.
 - Channel deletion fails with permission error:
   - Grant bot `Manage Channels` permission.
-- Browser automation cannot connect:
-  - Confirm Playwright MCP Bridge extension is installed in the browser profile you are using.
+- Browser automation cannot start:
+  - Confirm `npx` is available and `~/.codex/skills/playwright/scripts/playwright_cli.sh` exists.
 
 ## Development
 

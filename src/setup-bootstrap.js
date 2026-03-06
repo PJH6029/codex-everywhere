@@ -10,19 +10,11 @@ import { createHash } from 'crypto';
 const SETUP_SKILL_SOURCE_PATH = fileURLToPath(
   new URL('../.agents/skills/setup-discord/SKILL.md', import.meta.url),
 );
-const BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH = fileURLToPath(
-  new URL('../bootstrap/project-config.toml', import.meta.url),
-);
 const BOOTSTRAP_GUIDED_PROMPT_TEMPLATE_PATH = fileURLToPath(
   new URL('../bootstrap/guided-setup-prompt.txt', import.meta.url),
 );
-const PROJECT_CODEX_CONFIG_PATH = resolve(process.cwd(), '.codex', 'config.toml');
 const GLOBAL_CODEX_CONFIG_PATH = resolve(process.env.HOME || '', '.codex', 'config.toml');
-const PROJECT_CONFIG_BEGIN = '# BEGIN codex-everywhere bootstrap config';
-const PROJECT_CONFIG_END = '# END codex-everywhere bootstrap config';
 const BOOTSTRAP_REASONING_EFFORT = 'xhigh';
-const PLAYWRIGHT_EXTENSION_WEBSTORE_URL =
-  'https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm';
 
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -42,14 +34,31 @@ function resolveLocalSkillFile(cwd) {
   return resolve(resolveLocalSkillDir(cwd), 'SKILL.md');
 }
 
-async function buildProjectConfigBlock() {
-  const template = await readTextOrEmpty(BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH);
-  if (!template.trim()) {
-    throw new Error(
-      `bootstrap project config template missing or empty: ${BOOTSTRAP_PROJECT_CONFIG_TEMPLATE_PATH}`,
-    );
+function resolveCodexHome() {
+  const configuredHome = String(process.env.CODEX_HOME || '').trim();
+  if (configuredHome) return resolve(configuredHome);
+  if (process.env.HOME) return resolve(process.env.HOME, '.codex');
+  throw new Error('HOME environment variable is not set');
+}
+
+function resolveGlobalPlaywrightSkillDir() {
+  return resolve(resolveCodexHome(), 'skills', 'playwright');
+}
+
+function resolveGlobalPlaywrightSkillFile() {
+  return resolve(resolveGlobalPlaywrightSkillDir(), 'SKILL.md');
+}
+
+function resolveGlobalPlaywrightWrapperPath() {
+  return resolve(resolveGlobalPlaywrightSkillDir(), 'scripts', 'playwright_cli.sh');
+}
+
+async function readTextOrEmpty(path) {
+  try {
+    return await readFile(path, 'utf-8');
+  } catch {
+    return '';
   }
-  return template.endsWith('\n') ? template : `${template}\n`;
 }
 
 async function loadGuidedSetupPrompt() {
@@ -65,43 +74,6 @@ async function loadGuidedSetupPrompt() {
     );
   }
   return normalized;
-}
-
-async function readTextOrEmpty(path) {
-  try {
-    return await readFile(path, 'utf-8');
-  } catch {
-    return '';
-  }
-}
-
-async function writeProjectConfigBlock() {
-  const current = await readTextOrEmpty(PROJECT_CODEX_CONFIG_PATH);
-  const hasPlaywrightSections =
-    current.includes('[mcp_servers.playwright]') ||
-    current.includes('[apps.playwright.tools.browser_navigate]');
-  const block = await buildProjectConfigBlock();
-
-  let next = current;
-  if (current.includes(PROJECT_CONFIG_BEGIN) && current.includes(PROJECT_CONFIG_END)) {
-    const pattern = new RegExp(
-      `${escapeRegExp(PROJECT_CONFIG_BEGIN)}[\\s\\S]*?${escapeRegExp(PROJECT_CONFIG_END)}\\n?`,
-      'm',
-    );
-    next = current.replace(pattern, block);
-  } else if (hasPlaywrightSections) {
-    // Preserve user-owned sections when they already configured this manually.
-    console.log('[codex-everywhere] project .codex/config.toml already has playwright config; leaving as-is.');
-    return;
-  } else if (!current.trim()) {
-    next = `${block}`;
-  } else {
-    next = `${current.trimEnd()}\n\n${block}`;
-  }
-
-  await mkdir(dirname(PROJECT_CODEX_CONFIG_PATH), { recursive: true });
-  await writeFile(PROJECT_CODEX_CONFIG_PATH, next, 'utf-8');
-  console.log(`[codex-everywhere] wrote project config: ${PROJECT_CODEX_CONFIG_PATH}`);
 }
 
 function replaceTrustInsideProjectTable(content, escapedProjectPath) {
@@ -304,6 +276,24 @@ function tryInstallTmux() {
   return false;
 }
 
+function ensurePlaywrightSkillAvailable() {
+  if (!commandExists('npx')) {
+    throw new Error(
+      'npx is required for the installed Playwright skill. Install Node.js/npm, then rerun `codex-everywhere setup bootstrap`.',
+    );
+  }
+
+  const skillFile = resolveGlobalPlaywrightSkillFile();
+  const wrapperPath = resolveGlobalPlaywrightWrapperPath();
+  if (!existsSync(skillFile) || !existsSync(wrapperPath)) {
+    throw new Error(
+      `installed Playwright skill not found. Expected ${skillFile} and ${wrapperPath}. Install the skill in ~/.codex/skills/playwright, then rerun \`codex-everywhere setup bootstrap\`.`,
+    );
+  }
+
+  return { skillFile, wrapperPath };
+}
+
 async function ensureSetupDiscordSkillInstalled(cwd) {
   const localSkillFile = resolveLocalSkillFile(cwd);
   if (existsSync(localSkillFile)) {
@@ -372,14 +362,14 @@ export async function runBootstrapSetupCommand(args = []) {
     }
   }
 
-  await writeProjectConfigBlock();
+  const playwrightSkill = ensurePlaywrightSkillAvailable();
   await ensureProjectTrusted(cwd);
   await ensureSetupDiscordSkillInstalled(cwd);
 
   console.log('[codex-everywhere] bootstrap preparation complete.');
-  console.log('[codex-everywhere] project-scoped Codex config for Playwright MCP extension + tool approvals is ready.');
-  console.log(`[codex-everywhere] prerequisite: install Playwright MCP Bridge extension first: ${PLAYWRIGHT_EXTENSION_WEBSTORE_URL}`);
-  console.log('[codex-everywhere] user actions still required during setup: Playwright extension install/connection approval, /permissions approval, CAPTCHA, and Discord re-auth prompts.');
+  console.log(`[codex-everywhere] verified Playwright skill: ${playwrightSkill.skillFile}`);
+  console.log(`[codex-everywhere] verified Playwright CLI wrapper: ${playwrightSkill.wrapperPath}`);
+  console.log('[codex-everywhere] user actions still required during setup: /permissions approval, Discord login, CAPTCHA, and Discord re-auth prompts.');
 
   if (!options.launch) {
     console.log('[codex-everywhere] launch skipped (`--no-launch`).');
