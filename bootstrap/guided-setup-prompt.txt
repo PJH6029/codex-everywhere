@@ -3,5 +3,5 @@ Use the installed $playwright skill for all browser automation in this flow.
 Before browser automation, follow the playwright skill prerequisite check and verify npx plus the wrapper script are available.
 Target server name: codex-everywhere-server.
 Use default control channel (일반 in Korean locale, general in English locale).
-If Discord requests login, CAPTCHA, or re-authentication, ask the user to complete it.
+If Discord requests login, CAPTCHA, or re-authentication, tell the user to complete it in the browser, but do not ask them to type a confirmation message. Keep the same Playwright session alive and resume automatically by waiting for a positive post-auth signal on the page (expected URL, expected button/text, modal dismissal, or other target UI). Only fall back to detecting that the auth/challenge page disappeared if a stronger signal is unavailable.
 After setup, verify daemon is started and tell the user to type !ce-new in the control channel.
