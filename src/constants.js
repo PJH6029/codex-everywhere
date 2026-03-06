@@ -2,6 +2,8 @@ import { homedir } from 'os';
 import { join } from 'path';
 
 export const HOME_DIR = homedir();
+export const CODEX_HOME_DIR = join(HOME_DIR, '.codex');
+export const CODEX_SESSIONS_DIR = join(CODEX_HOME_DIR, 'sessions');
 export const CODEX_EVERYWHERE_HOME_DIR = join(HOME_DIR, '.codex-everywhere');
 export const CODEX_EVERYWHERE_CONFIG_PATH = join(CODEX_EVERYWHERE_HOME_DIR, 'config.json');
 

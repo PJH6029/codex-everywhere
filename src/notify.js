@@ -9,11 +9,16 @@ function eventEnabled(config, event) {
 
   if (event === 'session-start') return config.events.sessionStart;
   if (event === 'session-end') return config.events.sessionEnd;
+  if (event === 'progress-update') return config.events.progressUpdate;
   if (event === 'turn-complete') return config.events.turnComplete;
   if (event === 'user-input') return config.events.userInput;
   if (event === 'approval-request') return config.events.approvalRequest;
   if (event === 'ask-user-question') return config.events.askUserQuestion;
   return true;
+}
+
+function shouldMentionEvent(event) {
+  return event === 'session-start' || event === 'turn-complete';
 }
 
 function formatSessionStart(payload, debug = false) {
@@ -48,10 +53,27 @@ function formatTurnComplete(payload, debug = false) {
   const content = truncate(payload.content || '', 1600);
   const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
 
-  const lines = [content || '(empty response)'];
+  const lines = ['# Result', '', content || '(empty response)'];
   if (debug && payload.sessionId) lines.push('', `Session: \`${payload.sessionId}\``);
   if (debug && target) lines.push(`Target: \`${target}\``);
   return lines.join('\n');
+}
+
+function formatProgressUpdate(payload, debug = false) {
+  const content = truncate(payload.content || '', 1600);
+  const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
+  const includeHeader = payload.includeHeader !== false;
+
+  return [
+    includeHeader ? '# Progress' : null,
+    includeHeader ? '' : null,
+    content || '(empty update)',
+    '',
+    debug && payload.sessionId ? `Session: \`${payload.sessionId}\`` : null,
+    debug && target ? `Target: \`${target}\`` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function formatUserInput(payload, debug = false) {
@@ -100,6 +122,7 @@ function formatAskUserQuestion(payload) {
 function formatMessage(event, payload, debug = false) {
   if (event === 'session-start') return formatSessionStart(payload, debug);
   if (event === 'session-end') return formatSessionEnd(payload, debug);
+  if (event === 'progress-update') return formatProgressUpdate(payload, debug);
   if (event === 'user-input') return formatUserInput(payload, debug);
   if (event === 'approval-request') return formatApprovalRequest(payload);
   if (event === 'ask-user-question') return formatAskUserQuestion(payload);
@@ -117,6 +140,7 @@ export async function notifyEvent(event, payload) {
     content: message,
     replyToMessageId: payload.replyToMessageId,
     channelId: payload.channelId,
+    mention: shouldMentionEvent(event),
   });
 
   if (result.success && result.messageId && payload.paneId) {

@@ -22,7 +22,7 @@ After setup completes, type `!ce-new` in your control channel.
 ## What It Does
 
 - Runs Codex in tmux.
-- Sends Codex events to Discord (session start/end, turn complete, prompts).
+- Sends Codex events to Discord (session start/end, progress updates, turn complete, prompts).
 - Accepts Discord replies and injects them into Codex.
 - Bridges Codex approval prompts to Discord (`y`, `p`, `n` flow).
 - Manages one tmux/Codex session per provisioned Discord channel.
@@ -147,11 +147,13 @@ High-level flow:
 ```text
 Discord <-> reply-daemon.js <-> tmux pane <-> run-codex.js <-> Codex
                                \-> notify-hook.js / notify.js
+                               \-> codex-session-commentary.js / notify.js
 ```
 
 Key modules:
 - `src/cli.js`: command router and top-level orchestration.
 - `src/run-codex.js`: launches Codex process in managed session.
+- `src/codex-session-commentary.js`: tails Codex session JSONL for commentary-phase progress updates.
 - `src/reply-daemon.js`: reply polling, approval bridge, channel provisioning.
 - `src/discord.js`: Discord REST helpers.
 - `src/tmux.js`: tmux session/pane operations.
