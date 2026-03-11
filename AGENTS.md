@@ -3,7 +3,7 @@
 ## Project Overview
 
 - `codex-everywhere` is a Node.js CLI that runs Codex inside `tmux`, sends Codex events to Discord, and injects Discord replies back into managed Codex sessions.
-- The primary user flow is: bootstrap setup, configure Discord, start the daemon, then create sessions from the Discord control channel with `!ce-new`.
+- The primary user flow is: bootstrap setup, configure Discord, start the daemon, then create sessions from the Discord control channel with `/ce new` (legacy `!ce-new` also works).
 - This repo is a single-package ESM CLI. There is no monorepo workspace.
 
 ## Important Entry Points
@@ -11,7 +11,8 @@
 - `bin/codex-everywhere.js`: installed CLI entrypoint.
 - `src/cli.js`: top-level command router and session orchestration.
 - `src/run-codex.js`: launches Codex in a managed `tmux` pane/session.
-- `src/reply-daemon.js`: long-running Discord polling, approvals bridge, and per-channel session provisioning.
+- `src/reply-daemon.js`: long-running Discord polling, slash-command handling, approvals bridge, and per-channel session provisioning.
+- `src/discord-slash-commands.js`: registers `/ce` and receives Discord Gateway interactions.
 - `src/setup-bootstrap.js`: guided one-command bootstrap flow.
 - `src/setup-discord.js`: writes Discord/reply/provisioning config.
 - `src/config.js`: merges `~/.codex-everywhere/config.json` with supported environment overrides.
@@ -37,7 +38,7 @@
 4. After setup completes, restart the daemon if needed:
    - `codex-everywhere daemon restart`
 5. In the Discord control channel, send:
-   - `!ce-new`
+   - `/ce new`
 
 Bootstrap defaults and behavior:
 

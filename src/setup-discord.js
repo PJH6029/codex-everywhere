@@ -426,7 +426,8 @@ export async function runDiscordSetupCommand(args = []) {
       '',
       `Control channel configured: \`${controlChannelId}\``,
       `Authorized user ids: \`${authorizedUserIds.join(', ')}\``,
-      'Next: run `codex-everywhere daemon start` then type `!ce-new` in this channel.',
+      'Next: run `codex-everywhere daemon start` then type `/ce new` in this channel.',
+      'Legacy text commands like `!ce-new` still work.',
     ].join('\n');
 
     await sendDiscordMessage({

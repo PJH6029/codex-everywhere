@@ -17,12 +17,14 @@ import {
   addReaction,
   createGuildTextChannel,
   deleteDiscordChannel,
+  editDiscordInteractionResponse,
   fetchChannelMessages,
   getDiscordChannel,
   listGuildTextChannels,
   sendDiscordMessage,
   updateDiscordChannel,
 } from './discord.js';
+import { createDiscordSlashCommandRuntime } from './discord-slash-commands.js';
 import {
   pruneActiveSessions,
   removeActiveSession,
@@ -70,6 +72,7 @@ const DEFAULT_STATE = {
   lastProvisionScanAt: null,
   approvalsNotified: 0,
   userQuestionsNotified: 0,
+  slashCommandsHandled: 0,
   errors: 0,
   lastError: '',
   lastApprovalBySession: {},
@@ -925,6 +928,101 @@ function parseCreateSessionCommand(text) {
   };
 }
 
+function interactionChannelId(interaction) {
+  return String(interaction?.channel_id || '').trim();
+}
+
+function interactionSubcommandOption(interaction) {
+  const options = Array.isArray(interaction?.data?.options) ? interaction.data.options : [];
+  return options.find((option) => option?.type === 1) || null;
+}
+
+function interactionOptionValue(interaction, optionName) {
+  const subcommand = interactionSubcommandOption(interaction);
+  const options = Array.isArray(subcommand?.options) ? subcommand.options : [];
+  const matched = options.find((option) => String(option?.name || '') === optionName);
+  return matched?.value;
+}
+
+function parseCeSlashCommand(interaction) {
+  if (String(interaction?.data?.name || '').trim() !== 'ce') {
+    return null;
+  }
+
+  const subcommand = interactionSubcommandOption(interaction);
+  const subcommandName = String(subcommand?.name || '').trim();
+  if (!subcommandName) {
+    return null;
+  }
+
+  if (subcommandName === 'help') {
+    return { kind: 'session-help' };
+  }
+
+  if (subcommandName === 'meta') {
+    return { kind: 'session-meta' };
+  }
+
+  if (subcommandName === 'exit') {
+    return { kind: 'terminate-session' };
+  }
+
+  if (subcommandName === 'new') {
+    const approvalPolicy = normalizeCreateSessionApproval(interactionOptionValue(interaction, 'approval'));
+    const sandboxMode = normalizeCreateSessionSandbox(interactionOptionValue(interaction, 'sandbox'));
+    const fullAuto = interactionOptionValue(interaction, 'full-auto') === true;
+    const launchPolicy = buildLaunchPolicySpec(approvalPolicy, sandboxMode, fullAuto);
+
+    return {
+      kind: 'create-session',
+      cwd: String(interactionOptionValue(interaction, 'cwd') || '').trim(),
+      name: String(interactionOptionValue(interaction, 'name') || '').trim(),
+      ...launchPolicy,
+    };
+  }
+
+  if (subcommandName === 'perm') {
+    const resetDefault = interactionOptionValue(interaction, 'default') === true;
+    if (resetDefault) {
+      return {
+        kind: 'set-launch-policy',
+        resetDefault: true,
+        approvalPolicy: '',
+        sandboxMode: '',
+        fullAuto: false,
+        codexArgs: [],
+      };
+    }
+
+    const approvalPolicy = normalizeCreateSessionApproval(interactionOptionValue(interaction, 'approval'));
+    const sandboxMode = normalizeCreateSessionSandbox(interactionOptionValue(interaction, 'sandbox'));
+    const fullAuto = interactionOptionValue(interaction, 'full-auto') === true;
+    const launchPolicy = buildLaunchPolicySpec(approvalPolicy, sandboxMode, fullAuto);
+
+    if (launchPolicy.codexArgs.length === 0) {
+      return {
+        kind: 'set-launch-policy',
+        error: 'missing_policy_args',
+      };
+    }
+
+    return {
+      kind: 'set-launch-policy',
+      ...launchPolicy,
+    };
+  }
+
+  return null;
+}
+
+async function respondToDeferredInteraction(interaction, content) {
+  return editDiscordInteractionResponse(
+    interaction?.application_id,
+    interaction?.token,
+    { content },
+  );
+}
+
 function extractUserMessageContent(message) {
   return normalizeMultiline(String(message?.content || ''));
 }
@@ -1416,7 +1514,7 @@ async function sendControlChannelHandoff(config, session, trigger = 'terminate')
         ? `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`
         : `A Codex session finished via ${trigger}.`,
       `Continue here in <#${controlChannelId}>.`,
-      'Create another session with `!ce-new [name] --cwd <path>`.',
+      'Create another session with `/ce new`.',
     ].join('\n'),
   }).catch(() => {});
 }
@@ -1427,6 +1525,27 @@ function describeLaunchPolicy(command) {
   const fullAuto = command?.fullAuto === true;
   const mode = command?.resetDefault === true ? 'default' : (fullAuto ? 'full-auto' : 'custom');
   return `mode=${mode}, approval=${approval}, sandbox=${sandbox}`;
+}
+
+function formatSessionMetadata(session) {
+  return [
+    '# Session Metadata',
+    '',
+    `Session: \`${session?.sessionId || ''}\``,
+    `Channel ID: \`${session?.channelId || ''}\``,
+    `Routing Key: \`${session?.channelRoutingKey || `discord:${session?.channelId || ''}`}\``,
+    `tmux: \`${session?.tmuxSessionName || ''}\``,
+    `Pane: \`${session?.paneId || ''}\``,
+    `Project: \`${session?.projectPath || ''}\``,
+    session?.startedAt ? `Started: \`${session.startedAt}\`` : null,
+    session?.channelName ? `Channel Name: \`${session.channelName}\`` : null,
+    `Auto Name Pending: \`${session?.autoChannelNamePending === true}\``,
+    `Launch Approval: \`${session?.launchApprovalPolicy || '(default)'}\``,
+    `Launch Sandbox: \`${session?.launchSandboxMode || '(default)'}\``,
+    `Launch Full Auto: \`${session?.launchFullAuto === true}\``,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function formatChannelHelp(config, isControlChannel, hasBoundSession) {
@@ -1445,16 +1564,17 @@ function formatChannelHelp(config, isControlChannel, hasBoundSession) {
       'This is the control channel. Create/manage Codex sessions from here.',
       '',
       'Commands:',
-      '- `!ce-new [name] [--cwd <path>] [--approval <policy>] [--sandbox <mode>] [--full-auto]`',
-      '- `!ce-help`',
+      '- `/ce new`',
+      '- `/ce help`',
       '',
       'Examples:',
-      '- `!ce-new`',
-      '- `!ce-new bugfix --cwd ~/code/my-project`',
-      '- `!ce-new docs --approval on-request --sandbox workspace-write`',
+      '- `/ce new name:bugfix cwd:~/code/my-project`',
+      '- `/ce new name:docs approval:on-request sandbox:workspace-write`',
       ...sharedTail,
       '',
-      `Use session-channel commands inside provisioned channels: \`!ce-meta\`, \`!ce-perm ...\`, \`!ce-exit\`, \`!ce-help\`.`,
+      'Legacy aliases still work: `!ce-new`, `!ce-help`.',
+      '',
+      'Use session-channel commands inside provisioned channels: `/ce meta`, `/ce perm`, `/ce exit`, `/ce help`.',
     ].join('\n');
   }
 
@@ -1466,16 +1586,18 @@ function formatChannelHelp(config, isControlChannel, hasBoundSession) {
       : 'No active Codex session is currently bound to this channel.',
     '',
     'Commands in this channel:',
-    '- `!ce-help`',
-    '- `!ce-meta`',
-    '- `!ce-perm --approval <policy> --sandbox <mode>`',
-    '- `!ce-perm --full-auto`',
-    '- `!ce-perm --default`',
-    '- `!ce-exit`',
+    '- `/ce help`',
+    '- `/ce meta`',
+    '- `/ce perm approval:<policy> sandbox:<mode>`',
+    '- `/ce perm full-auto:true`',
+    '- `/ce perm default:true`',
+    '- `/ce exit`',
     '',
     'Any normal message is forwarded to Codex.',
     '',
-    `To create a new channel/session, use \`!ce-new\` in ${controlChannelText}.`,
+    'Legacy aliases still work: `!ce-help`, `!ce-meta`, `!ce-perm`, `!ce-exit`.',
+    '',
+    `To create a new channel/session, use \`/ce new\` in ${controlChannelText}.`,
     ...sharedTail,
   ].join('\n');
 }
@@ -1748,6 +1870,294 @@ async function handleCreateSessionCommandInControlChannel(config, state, message
   };
 }
 
+async function handleCreateSessionSlashCommand(config, state, interaction, command, activeSessions) {
+  const controlChannelId = String(config?.discordBot?.channelId || '').trim();
+  const sourceChannelId = interactionChannelId(interaction);
+  if (!controlChannelId || sourceChannelId !== controlChannelId) {
+    const message = controlChannelId
+      ? `Use \`/ce new\` in <#${controlChannelId}>.`
+      : 'Cannot create a session because no control channel is configured.';
+    await respondToDeferredInteraction(interaction, message).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const requestedCwd = resolveRequestedCwd(command?.cwd || '');
+  const cwdOk = await validateCwdDirectory(requestedCwd);
+  if (!cwdOk) {
+    await respondToDeferredInteraction(
+      interaction,
+      `Cannot create session: directory not found or not a directory: \`${requestedCwd}\``,
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const guildId = await ensureProvisionGuildId(config, state);
+  if (!guildId) {
+    await respondToDeferredInteraction(
+      interaction,
+      'Cannot create session channel: failed to resolve guild from the configured control channel.',
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const requestedName = String(command?.name || '').trim();
+  const channelNameBase = inferProvisionedChannelName(requestedCwd, requestedName, config);
+  const parentId = String(config?.discordProvisioning?.categoryId || '').trim();
+  const channelName = await makeUniqueChannelName(config, guildId, channelNameBase);
+  const createResult = await createGuildTextChannel(config.discordBot, guildId, {
+    name: channelName,
+    parentId,
+    topic: `codex-everywhere cwd: ${requestedCwd}`,
+  }).catch((error) => ({
+    success: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+
+  if (!createResult.success) {
+    let reason = createResult.error || 'discord_create_channel_failed';
+    if (reason.includes('missing_permissions')) {
+      reason = `${reason} (grant the bot 'Manage Channels' permission on this server/category)`;
+    }
+    await respondToDeferredInteraction(
+      interaction,
+      `Cannot create session channel: ${reason}`,
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const createdChannel = createResult.channel || {};
+  const createdChannelId = String(createdChannel.id || '').trim();
+  if (!createdChannelId) {
+    await respondToDeferredInteraction(
+      interaction,
+      'Channel create API returned no channel id.',
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  if (activeSessionByChannelId(activeSessions, createdChannelId)) {
+    await respondToDeferredInteraction(
+      interaction,
+      `Channel <#${createdChannelId}> already has an active session.`,
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const sessionRecord = await launchProvisionedSession(createdChannel, config, {
+    cwd: requestedCwd,
+    provisionedByChannel: true,
+    autoChannelNamePending: !requestedName,
+    approvalPolicy: command?.approvalPolicy || '',
+    sandboxMode: command?.sandboxMode || '',
+    fullAuto: command?.fullAuto === true,
+    codexArgs: Array.isArray(command?.codexArgs) ? command.codexArgs : [],
+  }).catch(() => null);
+
+  if (!sessionRecord) {
+    await respondToDeferredInteraction(
+      interaction,
+      `Created <#${createdChannelId}> but failed to start Codex session.`,
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const knownIds = Array.isArray(state.provisionKnownChannelIds) ? state.provisionKnownChannelIds : [];
+  const knownSet = new Set(knownIds.filter((id) => typeof id === 'string'));
+  knownSet.add(createdChannelId);
+  state.provisionKnownChannelIds = Array.from(knownSet).slice(-2000);
+  state.lastProvisionScanAt = nowIso();
+  state.slashCommandsHandled += 1;
+
+  const channelLink = `https://discord.com/channels/${guildId}/${createdChannelId}`;
+  await respondToDeferredInteraction(
+    interaction,
+    [
+      config?.debug === true
+        ? `Created <#${createdChannelId}> and started session \`${sessionRecord.sessionId}\`.`
+        : `Created <#${createdChannelId}> and started a new Codex session.`,
+      `Directory: \`${requestedCwd}\``,
+      `Open channel: ${channelLink}`,
+    ].join('\n'),
+  ).catch(() => {});
+
+  return {
+    handled: true,
+    activeSessions: [...activeSessions, sessionRecord],
+  };
+}
+
+async function handlePolicySlashCommand(config, state, interaction, command, activeSessions) {
+  const channelId = interactionChannelId(interaction);
+  const session = activeSessionByChannelId(activeSessions, channelId);
+  if (!session?.paneId) {
+    await respondToDeferredInteraction(
+      interaction,
+      'No active Codex session is bound to this channel.',
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const errorHint = String(command?.error || '').trim();
+  if (errorHint) {
+    await respondToDeferredInteraction(
+      interaction,
+      [
+        `Cannot update policy: \`${errorHint}\`.`,
+        'Use `/ce perm` with at least one of `approval`, `sandbox`, `full-auto`, or `default`.',
+      ].join('\n'),
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  const restarted = await restartSessionWithLaunchPolicy(session, config, command);
+  if (!restarted.ok || !restarted.session) {
+    state.errors += 1;
+    state.lastError = restarted.error || 'session_policy_restart_failed';
+    await respondToDeferredInteraction(
+      interaction,
+      `Policy update failed: ${restarted.error || 'unknown error'}.`,
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  state.slashCommandsHandled += 1;
+  await respondToDeferredInteraction(
+    interaction,
+    `Policy applied. New session launch policy: \`${describeLaunchPolicy(command)}\`.`,
+  ).catch(() => {});
+
+  return {
+    handled: true,
+    activeSessions: [
+      ...activeSessions.filter((candidate) => candidate?.sessionId !== session.sessionId),
+      restarted.session,
+    ],
+  };
+}
+
+async function handleLifecycleSlashCommand(config, state, interaction, command, activeSessions) {
+  const channelId = interactionChannelId(interaction);
+  const session = activeSessionByChannelId(activeSessions, channelId);
+  const isControlChannel = channelId === String(config.discordBot.channelId || '').trim();
+
+  if (command?.kind === 'session-help') {
+    state.slashCommandsHandled += 1;
+    await respondToDeferredInteraction(
+      interaction,
+      formatChannelHelp(config, isControlChannel, !!session),
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  if (command?.kind === 'session-meta') {
+    if (!session) {
+      await respondToDeferredInteraction(
+        interaction,
+        'No active Codex session is bound to this channel.',
+      ).catch(() => {});
+      return { handled: true, activeSessions };
+    }
+
+    state.slashCommandsHandled += 1;
+    await respondToDeferredInteraction(
+      interaction,
+      formatSessionMetadata(session),
+    ).catch(() => {});
+    return { handled: true, activeSessions };
+  }
+
+  if (command?.kind === 'terminate-session') {
+    if (!session?.paneId) {
+      await respondToDeferredInteraction(
+        interaction,
+        'No active Codex session is bound to this channel.',
+      ).catch(() => {});
+      return { handled: true, activeSessions };
+    }
+
+    const deletingChannel = shouldDeleteManagedSessionChannel(session, config);
+    if (deletingChannel) {
+      await respondToDeferredInteraction(
+        interaction,
+        config?.debug === true
+          ? `Termination requested for session \`${session.sessionId}\`. This channel will be deleted if shutdown succeeds.`
+          : 'Termination requested. This channel will be deleted if shutdown succeeds.',
+      ).catch(() => {});
+    }
+
+    const terminated = await terminateSessionFromDiscordCommand(session, config);
+    if (!terminated.ok) {
+      state.errors += 1;
+      state.lastError = terminated.error || 'session_terminate_failed';
+      await respondToDeferredInteraction(
+        interaction,
+        config?.debug === true
+          ? `Failed to terminate session \`${session.sessionId}\`: ${terminated.error || 'unknown error'}.`
+          : `Failed to terminate this session: ${terminated.error || 'unknown error'}.`,
+      ).catch(() => {});
+      return { handled: true, activeSessions };
+    }
+
+    state.slashCommandsHandled += 1;
+    const nextActiveSessions = activeSessions.filter((candidate) => candidate?.sessionId !== session.sessionId);
+
+    if (!terminated.channelDeleted) {
+      const mode = terminated.forced ? 'force-terminated' : 'terminated';
+      const suffix = terminated.channelDeleteError
+        ? ` Channel delete failed: ${terminated.channelDeleteError}.`
+        : '';
+      await respondToDeferredInteraction(
+        interaction,
+        config?.debug === true
+          ? `Session \`${session.sessionId}\` ${mode}.${suffix}`
+          : `Session ${mode}.${suffix}`,
+      ).catch(() => {});
+    }
+
+    return { handled: true, activeSessions: nextActiveSessions };
+  }
+
+  await respondToDeferredInteraction(
+    interaction,
+    'Unsupported `/ce` subcommand.',
+  ).catch(() => {});
+  return { handled: true, activeSessions };
+}
+
+async function handleDeferredDiscordInteraction(config, state, limiter, interaction, activeSessions) {
+  const command = parseCeSlashCommand(interaction);
+  if (!command) {
+    await respondToDeferredInteraction(
+      interaction,
+      'Unsupported `/ce` subcommand.',
+    ).catch(() => {});
+    return activeSessions;
+  }
+
+  if (!limiter.canProceed()) {
+    state.errors += 1;
+    state.lastError = 'rate_limited';
+    await respondToDeferredInteraction(
+      interaction,
+      'Rate limited. Try again in a few seconds.',
+    ).catch(() => {});
+    return activeSessions;
+  }
+
+  if (command.kind === 'create-session') {
+    const handled = await handleCreateSessionSlashCommand(config, state, interaction, command, activeSessions);
+    return handled.activeSessions;
+  }
+
+  if (command.kind === 'set-launch-policy') {
+    const handled = await handlePolicySlashCommand(config, state, interaction, command, activeSessions);
+    return handled.activeSessions;
+  }
+
+  const handled = await handleLifecycleSlashCommand(config, state, interaction, command, activeSessions);
+  return handled.activeSessions;
+}
+
 async function pollDiscordRepliesInChannel(config, state, limiter, channelId, activeSessions) {
   const channelCursorMap = getChannelCursorMap(state);
   const lastCursor = channelCursorMap[channelId] || null;
@@ -2000,24 +2410,7 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
 
       await sendDiscordMessage(config.discordBot, {
         channelId,
-        content: [
-          '# Session Metadata',
-          '',
-          `Session: \`${session.sessionId || ''}\``,
-          `Channel ID: \`${session.channelId || ''}\``,
-          `Routing Key: \`${session.channelRoutingKey || `discord:${session.channelId || ''}`}\``,
-          `tmux: \`${session.tmuxSessionName || ''}\``,
-          `Pane: \`${session.paneId || ''}\``,
-          `Project: \`${session.projectPath || ''}\``,
-          session.startedAt ? `Started: \`${session.startedAt}\`` : null,
-          session.channelName ? `Channel Name: \`${session.channelName}\`` : null,
-          `Auto Name Pending: \`${session.autoChannelNamePending === true}\``,
-          `Launch Approval: \`${session.launchApprovalPolicy || '(default)'}\``,
-          `Launch Sandbox: \`${session.launchSandboxMode || '(default)'}\``,
-          `Launch Full Auto: \`${session.launchFullAuto === true}\``,
-        ]
-          .filter(Boolean)
-          .join('\n'),
+        content: formatSessionMetadata(session),
         replyToMessageId: message.id,
       }).catch(() => {});
       continue;
@@ -2370,6 +2763,17 @@ async function runDaemonLoop() {
   let lastPruneAt = 0;
   let stopRequested = false;
   let limiter = new RateLimiter(10);
+  let slashRuntime = null;
+  let slashRuntimeKey = '';
+  let nextSlashRuntimeAttemptAt = 0;
+  const pendingSlashInteractions = [];
+
+  const stopSlashRuntime = async () => {
+    if (!slashRuntime) return;
+    await slashRuntime.stop().catch(() => {});
+    slashRuntime = null;
+    slashRuntimeKey = '';
+  };
 
   const shutdown = async () => {
     stopRequested = true;
@@ -2391,6 +2795,62 @@ async function runDaemonLoop() {
     try {
       const paneIds = listPaneIds();
       let activeSessions = await pruneActiveSessions(paneIds);
+      const configuredLimit = clampInt(config.reply.rateLimitPerMinute, 10, 1, 120);
+      if (limiter.maxPerMinute !== configuredLimit) {
+        limiter = new RateLimiter(configuredLimit);
+      }
+
+      const slashGuildId =
+        config.notificationsEnabled && config.discordBot.enabled
+          ? await ensureProvisionGuildId(config, state)
+          : '';
+      const shouldEnableSlashCommands =
+        config.notificationsEnabled &&
+        config.discordBot.enabled &&
+        config.reply.authorizedDiscordUserIds.length > 0 &&
+        !!slashGuildId;
+      const nextSlashRuntimeKey = shouldEnableSlashCommands
+        ? [
+          config.discordBot.botToken,
+          slashGuildId,
+          config.reply.authorizedDiscordUserIds.join(','),
+        ].join(':')
+        : '';
+
+      if (!shouldEnableSlashCommands) {
+        await stopSlashRuntime();
+      } else if ((!slashRuntime || slashRuntimeKey !== nextSlashRuntimeKey) && Date.now() >= nextSlashRuntimeAttemptAt) {
+        await stopSlashRuntime();
+        try {
+          slashRuntime = await createDiscordSlashCommandRuntime(config, slashGuildId, {
+            onInteraction: async (interaction) => {
+              pendingSlashInteractions.push(interaction);
+            },
+            onError: (error) => {
+              state.errors += 1;
+              state.lastError = error instanceof Error ? error.message : String(error);
+            },
+          });
+          slashRuntimeKey = nextSlashRuntimeKey;
+          nextSlashRuntimeAttemptAt = 0;
+        } catch (error) {
+          state.errors += 1;
+          state.lastError = error instanceof Error ? error.message : String(error);
+          nextSlashRuntimeAttemptAt = Date.now() + 30000;
+        }
+      }
+
+      while (pendingSlashInteractions.length > 0) {
+        const interaction = pendingSlashInteractions.shift();
+        if (!interaction) continue;
+        activeSessions = await handleDeferredDiscordInteraction(
+          config,
+          state,
+          limiter,
+          interaction,
+          activeSessions,
+        );
+      }
 
       if (config.notificationsEnabled && config.discordBot.enabled && config.discordProvisioning.enabled) {
         const lastScanMs = new Date(state.lastProvisionScanAt || 0).getTime();
@@ -2408,11 +2868,6 @@ async function runDaemonLoop() {
         config.reply.enabled &&
         config.reply.authorizedDiscordUserIds.length > 0
       ) {
-        const configuredLimit = clampInt(config.reply.rateLimitPerMinute, 10, 1, 120);
-        if (limiter.maxPerMinute !== configuredLimit) {
-          limiter = new RateLimiter(configuredLimit);
-        }
-
         const managedChannelIds = new Set();
         for (const session of activeSessions) {
           const channelId = String(session?.channelId || '').trim();
@@ -2453,6 +2908,7 @@ async function runDaemonLoop() {
     await sleep(delay);
   }
 
+  await stopSlashRuntime();
   state.isRunning = false;
   state.pid = null;
   await writeJsonAtomic(DAEMON_STATE_PATH, state).catch(() => {});

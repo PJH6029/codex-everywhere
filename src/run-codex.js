@@ -117,7 +117,7 @@ async function sendControlChannelHandoff(config, session, trigger = 'session-end
         ? `Session \`${session?.sessionId || ''}\` finished via ${trigger}.`
         : `A Codex session finished via ${trigger}.`,
       `Continue here in <#${controlChannelId}>.`,
-      'Create another session with `!ce-new [name] --cwd <path>`.',
+      'Create another session with `/ce new`.',
     ].join('\n'),
   }).catch(() => {});
 }

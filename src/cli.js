@@ -507,7 +507,7 @@ async function deleteManagedChannelForTerminatedSession(session, trigger = 'cli'
           ? `Session \`${session.sessionId}\` finished via ${trigger}.`
           : `A Codex session finished via ${trigger}.`,
         `Continue here in <#${controlChannelId}>.`,
-        'Create another session with `!ce-new [name] --cwd <path>`.',
+        'Create another session with `/ce new`.',
       ].join('\n'),
     }).catch(() => {});
   }

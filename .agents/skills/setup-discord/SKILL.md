@@ -9,7 +9,7 @@ Use this skill to bootstrap Discord for `codex-everywhere` with minimal manual s
 
 ## Goal
 
-After running this skill, user should be able to type `!ce-new` in control channel and start working.
+After running this skill, user should be able to type `/ce new` in control channel and start working. Legacy `!ce-new` should still work.
 
 Target defaults:
 
@@ -50,7 +50,7 @@ Target defaults:
    - Copy bot token
 6. Invite bot to server:
    - OAuth2 URL Generator
-   - Scope: `bot`
+   - Scope: `bot` and `applications.commands`
    - Permissions:
      - `View Channels`
      - `Read Message History`
@@ -73,7 +73,7 @@ Target defaults:
    - `codex-everywhere daemon stop`
    - `codex-everywhere daemon start`
 11. Verify:
-   - In control channel: `!ce-new`
+   - In control channel: `/ce new`
    - Confirm new channel/session appears.
 
 ## Notes

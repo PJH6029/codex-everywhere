@@ -567,3 +567,198 @@ export async function updateDiscordChannel(config, channelId, options = {}) {
 
   return { success: false, error: lastError };
 }
+
+export async function getCurrentDiscordApplication(config) {
+  const tokens = tokenCandidates(config);
+  if (tokens.length === 0) {
+    return { success: false, error: 'discord_not_configured' };
+  }
+
+  const url = 'https://discord.com/api/v10/applications/@me';
+  let lastError = 'discord_current_application_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: authHeaders(tokens[idx]),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        lastError = `discord_http_${response.status}`;
+        if ((response.status === 401 || response.status === 403) && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError };
+      }
+
+      const application = await response.json().catch(() => null);
+      return {
+        success: true,
+        application,
+        usedFallbackToken: idx > 0,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_current_application_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError };
+    }
+  }
+
+  return { success: false, error: lastError };
+}
+
+export async function getDiscordGatewayBot(config) {
+  const tokens = tokenCandidates(config);
+  if (tokens.length === 0) {
+    return { success: false, error: 'discord_not_configured' };
+  }
+
+  const url = 'https://discord.com/api/v10/gateway/bot';
+  let lastError = 'discord_gateway_bot_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: authHeaders(tokens[idx]),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        lastError = `discord_http_${response.status}`;
+        if ((response.status === 401 || response.status === 403) && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError };
+      }
+
+      const gateway = await response.json().catch(() => null);
+      return {
+        success: true,
+        gateway,
+        usedFallbackToken: idx > 0,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_gateway_bot_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError };
+    }
+  }
+
+  return { success: false, error: lastError };
+}
+
+export async function upsertGuildApplicationCommand(config, applicationId, guildId, command) {
+  const resolvedApplicationId = String(applicationId || '').trim();
+  const resolvedGuildId = String(guildId || '').trim();
+  const tokens = tokenCandidates(config);
+  if (!resolvedApplicationId || !resolvedGuildId || tokens.length === 0) {
+    return { success: false, error: 'discord_not_configured' };
+  }
+
+  const url = `https://discord.com/api/v10/applications/${resolvedApplicationId}/guilds/${resolvedGuildId}/commands`;
+  let lastError = 'discord_upsert_application_command_failed';
+
+  for (let idx = 0; idx < tokens.length; idx += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: authHeaders(tokens[idx]),
+        body: JSON.stringify(command || {}),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!response.ok) {
+        lastError = `discord_http_${response.status}`;
+        if ((response.status === 401 || response.status === 403) && idx < tokens.length - 1) continue;
+        return { success: false, error: lastError };
+      }
+
+      const registeredCommand = await response.json().catch(() => null);
+      return {
+        success: true,
+        command: registeredCommand,
+        usedFallbackToken: idx > 0,
+      };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : 'discord_upsert_application_command_failed';
+      if (idx < tokens.length - 1) continue;
+      return { success: false, error: lastError };
+    }
+  }
+
+  return { success: false, error: lastError };
+}
+
+export async function createDiscordInteractionResponse(interactionId, interactionToken, body) {
+  const resolvedInteractionId = String(interactionId || '').trim();
+  const resolvedToken = String(interactionToken || '').trim();
+  if (!resolvedInteractionId || !resolvedToken) {
+    return { success: false, error: 'discord_invalid_interaction_response_request' };
+  }
+
+  const url = `https://discord.com/api/v10/interactions/${resolvedInteractionId}/${resolvedToken}/callback`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body || {}),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `discord_http_${response.status}` };
+    }
+
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'discord_create_interaction_response_failed',
+    };
+  }
+}
+
+export async function editDiscordInteractionResponse(applicationId, interactionToken, options = {}) {
+  const resolvedApplicationId = String(applicationId || '').trim();
+  const resolvedToken = String(interactionToken || '').trim();
+  if (!resolvedApplicationId || !resolvedToken) {
+    return { success: false, error: 'discord_invalid_interaction_edit_request' };
+  }
+
+  const body = {};
+  if (typeof options?.content === 'string') {
+    body.content = truncate(String(options.content), DISCORD_MAX_MESSAGE_LENGTH);
+    body.allowed_mentions = { parse: [] };
+  }
+
+  if (Object.keys(body).length === 0) {
+    return { success: false, error: 'discord_no_interaction_response_fields' };
+  }
+
+  const url = `https://discord.com/api/v10/webhooks/${resolvedApplicationId}/${resolvedToken}/messages/@original`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      return { success: false, error: `discord_http_${response.status}` };
+    }
+
+    const message = await response.json().catch(() => null);
+    return { success: true, message };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'discord_edit_interaction_response_failed',
+    };
+  }
+}

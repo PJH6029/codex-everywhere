@@ -17,12 +17,13 @@ codex-everywhere setup bootstrap
 
 During guided setup, complete any requested Discord login/CAPTCHA/re-auth steps in the browser. The guided agent should continue automatically after the page reaches the expected post-auth state; no separate "I've done" message should be needed.
 
-After setup completes, type `!ce-new` in your control channel.
+After setup completes, type `/ce new` in your control channel. Legacy `!ce-new` still works.
 
 ## What It Does
 
 - Runs Codex in tmux.
 - Sends Codex events to Discord (session start/end, progress updates, turn complete, prompts).
+- Registers a native `/ce` slash command and handles it through the Discord Gateway while the daemon is running.
 - Accepts Discord replies and injects them into Codex.
 - Bridges Codex approval prompts to Discord (`y`, `p`, `n` flow).
 - Manages one tmux/Codex session per provisioned Discord channel.
@@ -72,7 +73,7 @@ codex-everywhere daemon restart
 In Discord control channel:
 
 ```text
-!ce-new
+/ce new
 ```
 
 ## Command Reference
@@ -154,8 +155,9 @@ Key modules:
 - `src/cli.js`: command router and top-level orchestration.
 - `src/run-codex.js`: launches Codex process in managed session.
 - `src/codex-session-commentary.js`: tails Codex session JSONL for commentary-phase progress updates.
-- `src/reply-daemon.js`: reply polling, approval bridge, channel provisioning.
+- `src/reply-daemon.js`: reply polling, slash-command dispatch, approval bridge, and channel provisioning.
 - `src/discord.js`: Discord REST helpers.
+- `src/discord-slash-commands.js`: slash-command registration and Discord Gateway interaction runtime.
 - `src/tmux.js`: tmux session/pane operations.
 - `src/setup-bootstrap.js`: one-command bootstrap preparation and guided launch.
 - `src/setup-discord.js`: writes Discord/reply/provision config.
@@ -183,6 +185,8 @@ Key modules:
   - Send one normal message in control channel, then rerun setup.
 - Discord messages look empty:
   - Enable **Message Content Intent** in Discord bot settings.
+- `/ce` does not appear in Discord:
+  - Restart the daemon so it can register guild commands, then re-authorize the bot with the `applications.commands` scope if needed.
 - Channel deletion fails with permission error:
   - Grant bot `Manage Channels` permission.
 - Browser automation cannot start:
