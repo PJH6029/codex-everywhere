@@ -2,15 +2,59 @@ import { DISCORD_MAX_MESSAGE_LENGTH } from './constants.js';
 import { parseMentionAllowedMentions } from './config.js';
 import { truncate } from './utils.js';
 
-function composeContent(content, mention) {
+function findChunkBoundary(text, maxLength) {
+  if (text.length <= maxLength) return text.length;
+
+  const minimumPreferredBoundary = Math.max(1, Math.floor(maxLength * 0.5));
+  const newlineBoundary = text.lastIndexOf('\n', maxLength);
+  if (newlineBoundary >= minimumPreferredBoundary) {
+    return newlineBoundary;
+  }
+
+  const spaceBoundary = text.lastIndexOf(' ', maxLength);
+  if (spaceBoundary >= minimumPreferredBoundary) {
+    return spaceBoundary;
+  }
+
+  return maxLength;
+}
+
+function splitContentBody(content, maxLength) {
+  const text = String(content ?? '');
+  if (text.length <= maxLength) return [text];
+
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > maxLength) {
+    const boundary = findChunkBoundary(remaining, maxLength);
+    const splitOnSeparator =
+      boundary < remaining.length && (remaining[boundary] === '\n' || remaining[boundary] === ' ');
+    const chunk = remaining.slice(0, boundary);
+
+    chunks.push(chunk);
+    remaining = remaining.slice(boundary + (splitOnSeparator ? 1 : 0));
+  }
+
+  if (remaining.length > 0 || chunks.length === 0) {
+    chunks.push(remaining);
+  }
+  return chunks;
+}
+
+function composeContentParts(content, mention) {
   const text = String(content ?? '');
   if (!mention) {
-    return truncate(text, DISCORD_MAX_MESSAGE_LENGTH);
+    return splitContentBody(text, DISCORD_MAX_MESSAGE_LENGTH);
   }
 
   const prefix = `${mention}\n`;
-  const maxBody = Math.max(1, DISCORD_MAX_MESSAGE_LENGTH - prefix.length);
-  return `${prefix}${truncate(text, maxBody)}`;
+  const maxBodyLength = Math.max(1, DISCORD_MAX_MESSAGE_LENGTH - prefix.length);
+  const chunks = splitContentBody(text, maxBodyLength);
+
+  if (chunks.length === 0) return [prefix];
+  chunks[0] = `${prefix}${chunks[0]}`;
+  return chunks;
 }
 
 function authHeaders(botToken) {
@@ -65,52 +109,77 @@ export async function sendDiscordMessage(config, options) {
   }
 
   const url = `https://discord.com/api/v10/channels/${channelId}/messages`;
-  const body = {
-    content: composeContent(options.content, mention),
-    allowed_mentions: parseMentionAllowedMentions(mention),
-  };
-
-  if (options.replyToMessageId) {
-    body.message_reference = {
-      message_id: options.replyToMessageId,
-      fail_if_not_exists: false,
-    };
-  }
+  const contents = composeContentParts(options.content, mention);
+  const allowedMentions = parseMentionAllowedMentions(mention);
 
   let lastError = 'discord_send_failed';
 
   for (let idx = 0; idx < tokens.length; idx += 1) {
     const token = tokens[idx];
+    const messageIds = [];
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: authHeaders(token),
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(10000),
-      });
+      for (let partIndex = 0; partIndex < contents.length; partIndex += 1) {
+        const body = {
+          content: contents[partIndex],
+          allowed_mentions: allowedMentions,
+        };
 
-      if (!response.ok) {
-        lastError = `discord_http_${response.status}`;
-        if (response.status === 401 && idx < tokens.length - 1) {
-          continue;
+        if (options.replyToMessageId && partIndex === 0) {
+          body.message_reference = {
+            message_id: options.replyToMessageId,
+            fail_if_not_exists: false,
+          };
         }
-        return { success: false, error: lastError };
+
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: authHeaders(token),
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        if (!response.ok) {
+          lastError = `discord_http_${response.status}`;
+          if (response.status === 401 && idx < tokens.length - 1 && messageIds.length === 0) {
+            break;
+          }
+          return {
+            success: false,
+            error: lastError,
+            messageIds,
+            messageId: messageIds[0],
+            usedFallbackToken: idx > 0,
+          };
+        }
+
+        const data = await response.json().catch(() => ({}));
+        const messageId = typeof data.id === 'string' ? data.id : undefined;
+        if (messageId) {
+          messageIds.push(messageId);
+        }
       }
 
-      const data = await response.json().catch(() => ({}));
+      if (lastError === 'discord_http_401' && idx < tokens.length - 1 && messageIds.length === 0) {
+        lastError = 'discord_send_failed';
+        continue;
+      }
+
       return {
         success: true,
-        messageId: typeof data.id === 'string' ? data.id : undefined,
+        messageId: messageIds[0],
+        messageIds,
         usedFallbackToken: idx > 0,
       };
     } catch (error) {
       lastError = error instanceof Error ? error.message : 'discord_send_failed';
-      if (idx < tokens.length - 1) {
+      if (idx < tokens.length - 1 && messageIds.length === 0) {
         continue;
       }
       return {
         success: false,
         error: lastError,
+        messageIds,
+        messageId: messageIds[0],
       };
     }
   }

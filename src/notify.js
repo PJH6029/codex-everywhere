@@ -50,7 +50,7 @@ function formatSessionEnd(payload, debug = false) {
 }
 
 function formatTurnComplete(payload, debug = false) {
-  const content = truncate(payload.content || '', 1600);
+  const content = String(payload.content || '');
   const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
 
   const lines = ['# Result', '', content || '(empty response)'];
@@ -60,7 +60,7 @@ function formatTurnComplete(payload, debug = false) {
 }
 
 function formatProgressUpdate(payload, debug = false) {
-  const content = truncate(payload.content || '', 1600);
+  const content = String(payload.content || '');
   const target = [payload.tmuxSessionName, payload.paneId].filter(Boolean).join(' ');
   const includeHeader = payload.includeHeader !== false;
 
@@ -143,18 +143,26 @@ export async function notifyEvent(event, payload) {
     mention: shouldMentionEvent(event),
   });
 
-  if (result.success && result.messageId && payload.paneId) {
-    await registerMessageMapping({
-      platform: 'discord-bot',
-      messageId: result.messageId,
-      sessionId: payload.sessionId,
-      tmuxPaneId: payload.paneId,
-      tmuxSessionName: payload.tmuxSessionName || '',
-      channelId: payload.channelId || config.discordBot.channelId || '',
-      event,
-      kind: event === 'approval-request' ? 'approval' : 'chat',
-      projectPath: payload.projectPath,
-    });
+  const messageIds = Array.isArray(result.messageIds)
+    ? result.messageIds.filter((messageId) => typeof messageId === 'string' && messageId.trim())
+    : result.messageId
+      ? [result.messageId]
+      : [];
+
+  if (messageIds.length > 0 && payload.paneId) {
+    for (const messageId of messageIds) {
+      await registerMessageMapping({
+        platform: 'discord-bot',
+        messageId,
+        sessionId: payload.sessionId,
+        tmuxPaneId: payload.paneId,
+        tmuxSessionName: payload.tmuxSessionName || '',
+        channelId: payload.channelId || config.discordBot.channelId || '',
+        event,
+        kind: event === 'approval-request' ? 'approval' : 'chat',
+        projectPath: payload.projectPath,
+      });
+    }
   }
 
   return result;
