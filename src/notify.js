@@ -127,9 +127,9 @@ function formatPlanDecisionRequest(payload) {
     '',
     'Codex proposed the plan below.',
     '',
-    'Reply with `1` to implement it or `2` to stay in Plan mode.',
-    '',
     planText || '(empty plan)',
+    '',
+    'Reply with `1` to implement it or `2` to stay in Plan mode.',
   ].join('\n');
 }
 
