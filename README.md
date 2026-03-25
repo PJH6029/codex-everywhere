@@ -17,7 +17,7 @@ codex-everywhere setup bootstrap
 
 During guided setup, complete any requested Discord login/CAPTCHA/re-auth steps in the browser. The guided agent should continue automatically after the page reaches the expected post-auth state; no separate "I've done" message should be needed.
 
-After setup completes, type `/ce new` in your control channel. Legacy `!ce-new` still works.
+After setup completes, type `/ce new` in your control channel. Legacy `!ce-new` still works. Inside a session channel, use `/ce plan` or `!ce-plan` to switch Codex into Plan mode.
 
 ## What It Does
 
@@ -26,6 +26,7 @@ After setup completes, type `/ce new` in your control channel. Legacy `!ce-new` 
 - Registers a native `/ce` slash command and handles it through the Discord Gateway while the daemon is running.
 - Accepts Discord replies and injects them into Codex.
 - Bridges Codex approval prompts to Discord (`y`, `p`, `n` flow).
+- Bridges Codex Plan mode proposals to Discord (`1` implement, `2` stay in Plan mode).
 - Manages one tmux/Codex session per provisioned Discord channel.
 
 ## Detailed Setup
@@ -141,6 +142,23 @@ codex-everywhere sessions attach [selector] [--pane] [--lines <n>] [--all]
 codex-everywhere sessions terminate [selector] [--all] [--wait <sec>] [--force]
 ```
 
+### Discord commands
+
+- Control channel:
+  - `/ce new`
+  - `/ce help`
+  - Legacy aliases: `!ce-new`, `!ce-help`
+- Session channels:
+  - `/ce help`
+  - `/ce meta`
+  - `/ce plan`
+  - `/ce perm`
+  - `/ce exit`
+  - Legacy aliases: `!ce-help`, `!ce-meta`, `!ce-plan`, `!ce-perm`, `!ce-exit`
+- Plan mode flow:
+  - Use `/ce plan` or `!ce-plan`, then send your planning request as the next message.
+  - When Codex proposes a plan, reply `1` to implement it or `2` to stay in Plan mode.
+
 ## Architecture
 
 High-level flow:
@@ -196,4 +214,5 @@ Key modules:
 
 ```bash
 npm run check
+npm test
 ```

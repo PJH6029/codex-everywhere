@@ -1,9 +1,12 @@
 import { open, readFile, readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { CODEX_SESSIONS_DIR } from './constants.js';
+import { upsertActiveSession } from './active-sessions.js';
 import { notifyEvent } from './notify.js';
+import { nowIso } from './utils.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1200;
+const MAX_SEEN_PLAN_IDS = 64;
 
 async function collectSessionLogFiles(rootDir = CODEX_SESSIONS_DIR, depth = 0, files = []) {
   if (depth > 4) return files;
@@ -128,25 +131,65 @@ async function readNewText(filePath, offset) {
   }
 }
 
-function extractCommentaryMessage(line) {
-  if (!line) return '';
+function normalizeCollaborationModeKind(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'default' || normalized === 'plan') {
+    return normalized;
+  }
+  return '';
+}
+
+export function parseCodexSessionLogLine(line) {
+  if (!line) return null;
 
   let parsed;
   try {
     parsed = JSON.parse(line);
   } catch {
-    return '';
+    return null;
   }
 
-  if (parsed?.type !== 'event_msg') return '';
+  if (parsed?.type !== 'event_msg') return null;
 
   const payload = parsed.payload;
-  if (!payload || typeof payload !== 'object') return '';
-  if (payload.type !== 'agent_message') return '';
-  if (String(payload.phase || '').trim().toLowerCase() !== 'commentary') return '';
+  if (!payload || typeof payload !== 'object') return null;
 
-  const message = typeof payload.message === 'string' ? payload.message.trim() : '';
-  return message;
+  if (payload.type === 'agent_message') {
+    if (String(payload.phase || '').trim().toLowerCase() !== 'commentary') {
+      return null;
+    }
+
+    const message = typeof payload.message === 'string' ? payload.message.trim() : '';
+    return message
+      ? { type: 'commentary', message }
+      : null;
+  }
+
+  if (payload.type === 'task_started') {
+    const mode = normalizeCollaborationModeKind(payload.collaboration_mode_kind);
+    return mode
+      ? { type: 'collaboration-mode', mode }
+      : null;
+  }
+
+  if (payload.type === 'item_completed') {
+    const item = payload.item;
+    if (!item || typeof item !== 'object' || item.type !== 'Plan') {
+      return null;
+    }
+
+    const planText = typeof item.text === 'string' ? item.text.trim() : '';
+    const itemId = typeof item.id === 'string' ? item.id.trim() : '';
+    if (!planText) return null;
+
+    return {
+      type: 'plan-completed',
+      itemId,
+      planText,
+    };
+  }
+
+  return null;
 }
 
 export function startCodexSessionCommentaryRelay(options = {}) {
@@ -159,9 +202,12 @@ export function startCodexSessionCommentaryRelay(options = {}) {
   let offset = 0;
   let remainder = '';
   let hasSentProgressHeader = false;
+  let currentCollaborationMode = normalizeCollaborationModeKind(options.initialCollaborationMode) || 'default';
   let stopped = false;
   let timer = null;
   let running = Promise.resolve();
+  const seenPlanItemIds = [];
+  const seenPlanItemIdSet = new Set();
 
   async function relayMessage(message) {
     const result = await notifyEvent('progress-update', {
@@ -178,10 +224,61 @@ export function startCodexSessionCommentaryRelay(options = {}) {
     }
   }
 
+  function rememberPlanItemId(itemId) {
+    if (!itemId || seenPlanItemIdSet.has(itemId)) return false;
+    seenPlanItemIdSet.add(itemId);
+    seenPlanItemIds.push(itemId);
+    while (seenPlanItemIds.length > MAX_SEEN_PLAN_IDS) {
+      const removed = seenPlanItemIds.shift();
+      if (removed) {
+        seenPlanItemIdSet.delete(removed);
+      }
+    }
+    return true;
+  }
+
+  async function syncCollaborationMode(mode) {
+    if (!mode || mode === currentCollaborationMode) return;
+    currentCollaborationMode = mode;
+    await upsertActiveSession({
+      sessionId: options.sessionId,
+      collaborationModeKind: mode,
+      collaborationModeUpdatedAt: nowIso(),
+    }).catch(() => {});
+  }
+
+  async function relayPlanDecisionRequest(planText, itemId) {
+    if (!planText) return;
+    if (itemId && !rememberPlanItemId(itemId)) return;
+
+    await notifyEvent('plan-decision-request', {
+      sessionId: options.sessionId,
+      paneId: options.paneId,
+      tmuxSessionName: options.tmuxSessionName,
+      projectPath: options.projectPath,
+      channelId: options.channelId,
+      planItemId: itemId,
+      content: planText,
+    }).catch(() => {});
+  }
+
   async function processLine(line) {
-    const message = extractCommentaryMessage(line);
-    if (!message) return;
-    await relayMessage(message);
+    const event = parseCodexSessionLogLine(line);
+    if (!event) return;
+
+    if (event.type === 'commentary') {
+      await relayMessage(event.message);
+      return;
+    }
+
+    if (event.type === 'collaboration-mode') {
+      await syncCollaborationMode(event.mode);
+      return;
+    }
+
+    if (event.type === 'plan-completed') {
+      await relayPlanDecisionRequest(event.planText, event.itemId);
+    }
   }
 
   async function flushRemainder() {

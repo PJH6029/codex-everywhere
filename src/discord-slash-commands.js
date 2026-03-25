@@ -131,6 +131,11 @@ export function buildCeApplicationCommand() {
       },
       {
         type: OPTION_TYPE_SUBCOMMAND,
+        name: 'plan',
+        description: 'Switch the current session to Codex Plan mode',
+      },
+      {
+        type: OPTION_TYPE_SUBCOMMAND,
         name: 'exit',
         description: 'Exit the current session',
       },

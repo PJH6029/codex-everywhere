@@ -709,6 +709,8 @@ async function runSession(codexArgs) {
     provisionedByChannel,
     projectPath: cwd,
     startedAt: new Date().toISOString(),
+    collaborationModeKind: 'default',
+    collaborationModeUpdatedAt: new Date().toISOString(),
   });
 
   const startNotifyResult = await notifyWithRetry('session-start', {

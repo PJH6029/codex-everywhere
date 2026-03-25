@@ -450,6 +450,10 @@ const HELP_MESSAGE_COMMANDS = new Set([
   '!ce-help',
   '!codex-help',
 ]);
+const PLAN_MESSAGE_COMMANDS = new Set([
+  '!ce-plan',
+  '!codex-plan',
+]);
 const POLICY_MESSAGE_COMMANDS = new Set([
   '!ce-perm',
   '!ce-permission',
@@ -485,6 +489,17 @@ function parseApprovalDecision(text) {
   }
   if (/^(n|no|deny|reject|3)\b/.test(lowered)) {
     return { key: '3', label: 'deny' };
+  }
+  return null;
+}
+
+export function parsePlanDecision(text) {
+  const lowered = String(text ?? '').trim().toLowerCase();
+  if (/^(1|y|yes|implement|accept|apply)\b/.test(lowered)) {
+    return { key: '1', label: 'implement_plan' };
+  }
+  if (/^(2|n|no|stay|keep\s+planning|remain)\b/.test(lowered)) {
+    return { key: '2', label: 'stay_in_plan_mode' };
   }
   return null;
 }
@@ -525,6 +540,14 @@ function buildLaunchPolicySpec(approvalPolicy, sandboxMode, fullAuto) {
   };
 }
 
+function normalizeCollaborationModeKind(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'default' || normalized === 'plan') {
+    return normalized;
+  }
+  return '';
+}
+
 function markConversationInterruptedSuppressed(state, sessionId, ttlMs = DENY_INTERRUPTED_SUPPRESS_MS) {
   const id = String(sessionId || '').trim();
   if (!id) return;
@@ -558,7 +581,13 @@ function hasPendingApprovalForPane(paneId) {
   return !!detectApprovalPrompt(paneContent);
 }
 
-function parseLifecycleCommand(text) {
+function hasPendingPlanDecisionForPane(paneId) {
+  if (!paneId) return false;
+  const paneContent = capturePane(paneId, 90);
+  return !!detectPlanPrompt(paneContent);
+}
+
+export function parseLifecycleCommand(text) {
   const normalized = String(text || '')
     .replace(/^(?:<@!?\d{17,20}>\s*)+/g, '')
     .trim()
@@ -572,6 +601,9 @@ function parseLifecycleCommand(text) {
   }
   if (META_MESSAGE_COMMANDS.has(normalized)) {
     return { kind: 'session-meta' };
+  }
+  if (PLAN_MESSAGE_COMMANDS.has(normalized)) {
+    return { kind: 'enter-plan-mode' };
   }
   return null;
 }
@@ -944,7 +976,7 @@ function interactionOptionValue(interaction, optionName) {
   return matched?.value;
 }
 
-function parseCeSlashCommand(interaction) {
+export function parseCeSlashCommand(interaction) {
   if (String(interaction?.data?.name || '').trim() !== 'ce') {
     return null;
   }
@@ -961,6 +993,10 @@ function parseCeSlashCommand(interaction) {
 
   if (subcommandName === 'meta') {
     return { kind: 'session-meta' };
+  }
+
+  if (subcommandName === 'plan') {
+    return { kind: 'enter-plan-mode' };
   }
 
   if (subcommandName === 'exit') {
@@ -1216,6 +1252,40 @@ function detectApprovalPrompt(content) {
   };
 }
 
+export function detectPlanPrompt(content) {
+  const normalized = String(content || '');
+  if (!normalized) return null;
+
+  const lines = normalized
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+
+  const lower = lines.join('\n').toLowerCase();
+  const hasPrompt =
+    lower.includes('implement this plan?') &&
+    (
+      lower.includes('yes, implement this plan') ||
+      lower.includes('no, stay in plan mode')
+    );
+
+  if (!hasPrompt) return null;
+
+  const question = lines.find((line) => /implement this plan\?/i.test(line)) || 'Implement this plan?';
+  const snippet = truncate(lines.slice(-12).join(' | '), 600);
+  const signature = createHash('sha256')
+    .update(`${question.toLowerCase()}\n${snippet.toLowerCase()}`)
+    .digest('hex')
+    .slice(0, 16);
+
+  return {
+    question,
+    signature,
+    snippet,
+  };
+}
+
 function detectUserInputPrompt(content) {
   const normalized = String(content || '');
   if (!normalized) return null;
@@ -1409,6 +1479,63 @@ function activeSessionById(sessions, sessionId) {
   return null;
 }
 
+function replaceActiveSessionRecord(activeSessions, nextSession) {
+  if (!nextSession?.sessionId) return activeSessions;
+  return activeSessions.map((session) => (
+    session?.sessionId === nextSession.sessionId
+      ? { ...session, ...nextSession }
+      : session
+  ));
+}
+
+async function updateSessionCollaborationMode(activeSessions, sessionId, mode) {
+  const normalizedMode = normalizeCollaborationModeKind(mode);
+  const session = activeSessionById(activeSessions, sessionId);
+  if (!session || !normalizedMode) {
+    return { activeSessions, session };
+  }
+
+  const collaborationModeUpdatedAt = nowIso();
+  const nextSession = {
+    ...session,
+    collaborationModeKind: normalizedMode,
+    collaborationModeUpdatedAt,
+  };
+
+  await upsertActiveSession({
+    sessionId,
+    collaborationModeKind: normalizedMode,
+    collaborationModeUpdatedAt,
+  }).catch(() => {});
+
+  return {
+    activeSessions: replaceActiveSessionRecord(activeSessions, nextSession),
+    session: nextSession,
+  };
+}
+
+async function enterPlanMode(activeSessions, session) {
+  if (!session?.paneId) {
+    return { ok: false, reason: 'missing_pane_id', activeSessions, session };
+  }
+
+  if (hasPendingPlanDecisionForPane(session.paneId)) {
+    return { ok: false, reason: 'pending_plan_decision', activeSessions, session };
+  }
+
+  const ok = sendLiteralToPane(session.paneId, '/plan', true, 1);
+  if (!ok) {
+    return { ok: false, reason: 'tmux_injection_failed', activeSessions, session };
+  }
+
+  const updated = await updateSessionCollaborationMode(activeSessions, session.sessionId, 'plan');
+  return {
+    ok: true,
+    activeSessions: updated.activeSessions,
+    session: updated.session,
+  };
+}
+
 async function launchProvisionedSession(channel, config, options = {}) {
   const channelId = String(channel.id || '');
   const cwd = String(options.cwd || process.cwd());
@@ -1419,6 +1546,8 @@ async function launchProvisionedSession(channel, config, options = {}) {
   const codexArgs = Array.isArray(options.codexArgs) ? options.codexArgs.filter((item) => typeof item === 'string') : [];
   const runnerCommand = buildRunnerCommand(sessionId, cwd, channelId, codexArgs);
   const autoChannelNamePending = options.autoChannelNamePending === true;
+  const startedAt = nowIso();
+  const collaborationModeUpdatedAt = startedAt;
 
   const created = createDetachedSession(sessionName, cwd, runnerCommand);
 
@@ -1428,7 +1557,7 @@ async function launchProvisionedSession(channel, config, options = {}) {
     tmuxSessionName: created.sessionName,
     channelId,
     projectPath: cwd,
-    startedAt: nowIso(),
+    startedAt,
     channelName: normalizeChannelName(String(channel.name || ''), DEFAULT_NEW_CHANNEL_NAME),
     channelRoutingKey: `discord:${channelId}`,
     autoChannelNamePending,
@@ -1436,6 +1565,8 @@ async function launchProvisionedSession(channel, config, options = {}) {
     launchApprovalPolicy: String(options.approvalPolicy || ''),
     launchSandboxMode: String(options.sandboxMode || ''),
     launchFullAuto: options.fullAuto === true,
+    collaborationModeKind: 'default',
+    collaborationModeUpdatedAt,
   });
 
   await notifyEvent('session-start', {
@@ -1468,6 +1599,17 @@ async function injectApprovalDecision(mapping, text) {
   }
 
   const ok = sendLiteralToPane(mapping.tmuxPaneId, parsed.key, true, 1);
+  return ok ? { ok: true, decision: parsed.label } : { ok: false, reason: 'tmux_injection_failed' };
+}
+
+async function injectPlanDecision(mapping, text) {
+  const parsed = parsePlanDecision(text);
+  if (!parsed) return { ok: false, reason: 'invalid_decision' };
+  if (!hasPendingPlanDecisionForPane(mapping.tmuxPaneId)) {
+    return { ok: false, reason: 'no_pending_plan_decision' };
+  }
+
+  const ok = sendLiteralToPane(mapping.tmuxPaneId, parsed.key, false, 1);
   return ok ? { ok: true, decision: parsed.label } : { ok: false, reason: 'tmux_injection_failed' };
 }
 
@@ -1528,6 +1670,7 @@ function describeLaunchPolicy(command) {
 }
 
 function formatSessionMetadata(session) {
+  const collaborationMode = normalizeCollaborationModeKind(session?.collaborationModeKind) || 'default';
   return [
     '# Session Metadata',
     '',
@@ -1540,6 +1683,10 @@ function formatSessionMetadata(session) {
     session?.startedAt ? `Started: \`${session.startedAt}\`` : null,
     session?.channelName ? `Channel Name: \`${session.channelName}\`` : null,
     `Auto Name Pending: \`${session?.autoChannelNamePending === true}\``,
+    `Collaboration Mode: \`${collaborationMode}\``,
+    session?.collaborationModeUpdatedAt
+      ? `Collaboration Mode Updated: \`${session.collaborationModeUpdatedAt}\``
+      : null,
     `Launch Approval: \`${session?.launchApprovalPolicy || '(default)'}\``,
     `Launch Sandbox: \`${session?.launchSandboxMode || '(default)'}\``,
     `Launch Full Auto: \`${session?.launchFullAuto === true}\``,
@@ -1574,7 +1721,7 @@ function formatChannelHelp(config, isControlChannel, hasBoundSession) {
       '',
       'Legacy aliases still work: `!ce-new`, `!ce-help`.',
       '',
-      'Use session-channel commands inside provisioned channels: `/ce meta`, `/ce perm`, `/ce exit`, `/ce help`.',
+      'Use session-channel commands inside provisioned channels: `/ce meta`, `/ce plan`, `/ce perm`, `/ce exit`, `/ce help`.',
     ].join('\n');
   }
 
@@ -1588,14 +1735,16 @@ function formatChannelHelp(config, isControlChannel, hasBoundSession) {
     'Commands in this channel:',
     '- `/ce help`',
     '- `/ce meta`',
+    '- `/ce plan`',
     '- `/ce perm approval:<policy> sandbox:<mode>`',
     '- `/ce perm full-auto:true`',
     '- `/ce perm default:true`',
     '- `/ce exit`',
     '',
     'Any normal message is forwarded to Codex.',
+    'When Codex proposes a plan, reply with `1` to implement it or `2` to stay in Plan mode.',
     '',
-    'Legacy aliases still work: `!ce-help`, `!ce-meta`, `!ce-perm`, `!ce-exit`.',
+    'Legacy aliases still work: `!ce-help`, `!ce-meta`, `!ce-plan`, `!ce-perm`, `!ce-exit`.',
     '',
     `To create a new channel/session, use \`/ce new\` in ${controlChannelText}.`,
     ...sharedTail,
@@ -2066,6 +2215,42 @@ async function handleLifecycleSlashCommand(config, state, interaction, command, 
     return { handled: true, activeSessions };
   }
 
+  if (command?.kind === 'enter-plan-mode') {
+    if (!session?.paneId) {
+      await respondToDeferredInteraction(
+        interaction,
+        'No active Codex session is bound to this channel.',
+      ).catch(() => {});
+      return { handled: true, activeSessions };
+    }
+
+    const entered = await enterPlanMode(activeSessions, session);
+    if (!entered.ok) {
+      const errorMessage = entered.reason === 'pending_plan_decision'
+        ? 'A proposed plan is already waiting for a decision. Reply with `1` to implement it or `2` to stay in Plan mode.'
+        : `Failed to enter Plan mode: ${entered.reason || 'unknown error'}.`;
+      if (entered.reason !== 'pending_plan_decision') {
+        state.errors += 1;
+        state.lastError = entered.reason || 'plan_mode_enter_failed';
+      }
+      await respondToDeferredInteraction(
+        interaction,
+        errorMessage,
+      ).catch(() => {});
+      return { handled: true, activeSessions };
+    }
+
+    state.slashCommandsHandled += 1;
+    await respondToDeferredInteraction(
+      interaction,
+      'Plan mode requested. Send your planning prompt as the next message in this channel.',
+    ).catch(() => {});
+    return {
+      handled: true,
+      activeSessions: entered.activeSessions,
+    };
+  }
+
   if (command?.kind === 'terminate-session') {
     if (!session?.paneId) {
       await respondToDeferredInteraction(
@@ -2388,6 +2573,52 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
       continue;
     }
 
+    if (lifecycle?.kind === 'enter-plan-mode') {
+      if (!limiter.canProceed()) {
+        state.errors += 1;
+        state.lastError = 'rate_limited';
+        continue;
+      }
+
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+
+      const session = activeSessionByChannelId(activeSessions, channelId);
+      if (!session?.paneId) {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'No active Codex session is bound to this channel.',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      const entered = await enterPlanMode(activeSessions, session);
+      if (!entered.ok) {
+        if (entered.reason !== 'pending_plan_decision') {
+          state.errors += 1;
+          state.lastError = entered.reason || 'plan_mode_enter_failed';
+        }
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: entered.reason === 'pending_plan_decision'
+            ? 'A proposed plan is already waiting for a decision. Reply with `1` to implement it or `2` to stay in Plan mode.'
+            : `Failed to enter Plan mode: ${entered.reason || 'unknown error'}.`,
+          replyToMessageId: message.id,
+        }).catch(() => {});
+        continue;
+      }
+
+      activeSessions = entered.activeSessions;
+      state.messagesInjected += 1;
+      await sendDiscordMessage(config.discordBot, {
+        channelId,
+        content: 'Plan mode requested. Send your planning prompt as the next message in this channel.',
+        replyToMessageId: message.id,
+      }).catch(() => {});
+      continue;
+    }
+
     if (lifecycle?.kind === 'session-meta') {
       if (!limiter.canProceed()) {
         state.errors += 1;
@@ -2450,6 +2681,13 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
       }
     }
 
+    if (mapping.kind === 'chat' && hasPendingPlanDecisionForPane(mapping.tmuxPaneId)) {
+      mapping = {
+        ...mapping,
+        kind: 'plan-decision',
+      };
+    }
+
     if (!limiter.canProceed()) {
       state.errors += 1;
       state.lastError = 'rate_limited';
@@ -2487,9 +2725,42 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
           markConversationInterruptedSuppressed(state, mapping.sessionId);
         }
       }
+    } else if (mapping.kind === 'plan-decision') {
+      injectResult = await injectPlanDecision(mapping, userContent);
+      if (!injectResult.ok && injectResult.reason === 'invalid_decision') {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'Plan reply must start with `1` (implement) or `2` (stay in Plan mode).',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+      } else if (!injectResult.ok && injectResult.reason === 'no_pending_plan_decision') {
+        await sendDiscordMessage(config.discordBot, {
+          channelId,
+          content: 'No proposed-plan decision is currently active for this session.',
+          replyToMessageId: message.id,
+        }).catch(() => {});
+      } else if (injectResult.ok) {
+        const nextMode = injectResult.decision === 'implement_plan' ? 'default' : 'plan';
+        const updated = await updateSessionCollaborationMode(activeSessions, mapping.sessionId, nextMode);
+        activeSessions = updated.activeSessions;
+      }
     } else {
       const ok = await injectReplyToPane(mapping, userContent, config);
       injectResult = ok ? { ok: true } : { ok: false, reason: 'tmux_injection_failed' };
+    }
+
+    if (
+      !injectResult.ok &&
+      (mapping.kind === 'approval' || mapping.kind === 'plan-decision') &&
+      (
+        injectResult.reason === 'invalid_decision' ||
+        injectResult.reason === 'no_pending_approval' ||
+        injectResult.reason === 'no_pending_plan_decision'
+      )
+    ) {
+      processed.add(message.id);
+      await addReaction(config.discordBot, message.id, '%E2%9C%85', channelId).catch(() => {});
+      continue;
     }
 
     if (injectResult.ok) {
@@ -2500,7 +2771,9 @@ async function pollDiscordRepliesInChannel(config, state, limiter, channelId, ac
         const target = mapping.tmuxSessionName
           ? `${mapping.tmuxSessionName} ${mapping.tmuxPaneId}`
           : mapping.tmuxPaneId;
-        const action = mapping.kind === 'approval' ? 'Decision injected' : 'Message injected';
+        const action = mapping.kind === 'approval' || mapping.kind === 'plan-decision'
+          ? 'Decision injected'
+          : 'Message injected';
         await sendDiscordMessage(config.discordBot, {
           channelId,
           content: `${action} into tmux target \`${target}\`.`,

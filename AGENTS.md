@@ -3,7 +3,7 @@
 ## Project Overview
 
 - `codex-everywhere` is a Node.js CLI that runs Codex inside `tmux`, sends Codex events to Discord, and injects Discord replies back into managed Codex sessions.
-- The primary user flow is: bootstrap setup, configure Discord, start the daemon, then create sessions from the Discord control channel with `/ce new` (legacy `!ce-new` also works).
+- The primary user flow is: bootstrap setup, configure Discord, start the daemon, then create sessions from the Discord control channel with `/ce new` (legacy `!ce-new` also works). Session channels also support `/ce plan` and `!ce-plan` for Codex Plan mode.
 - This repo is a single-package ESM CLI. There is no monorepo workspace.
 
 ## Important Entry Points
@@ -100,7 +100,7 @@ Important note:
 - Quick CLI sanity checks:
   - `codex-everywhere --help`
   - `codex-everywhere setup discord --help`
-- There is currently no broader automated test suite in this repo; validate behavior with targeted CLI checks and careful code review.
+- There is still no broad integration suite in this repo; use `npm run check`, `npm test`, targeted CLI checks, and careful code review.
 
 When changing behavior, prefer keeping these docs in sync:
 

@@ -14,6 +14,7 @@ function eventEnabled(config, event) {
   if (event === 'user-input') return config.events.userInput;
   if (event === 'approval-request') return config.events.approvalRequest;
   if (event === 'ask-user-question') return config.events.askUserQuestion;
+  if (event === 'plan-decision-request') return config.events.askUserQuestion;
   return true;
 }
 
@@ -119,6 +120,19 @@ function formatAskUserQuestion(payload) {
   ].join('\n');
 }
 
+function formatPlanDecisionRequest(payload) {
+  const planText = String(payload.content || '').trim();
+  return [
+    '# Proposed Plan',
+    '',
+    'Codex proposed the plan below.',
+    '',
+    'Reply with `1` to implement it or `2` to stay in Plan mode.',
+    '',
+    planText || '(empty plan)',
+  ].join('\n');
+}
+
 function formatMessage(event, payload, debug = false) {
   if (event === 'session-start') return formatSessionStart(payload, debug);
   if (event === 'session-end') return formatSessionEnd(payload, debug);
@@ -126,7 +140,14 @@ function formatMessage(event, payload, debug = false) {
   if (event === 'user-input') return formatUserInput(payload, debug);
   if (event === 'approval-request') return formatApprovalRequest(payload);
   if (event === 'ask-user-question') return formatAskUserQuestion(payload);
+  if (event === 'plan-decision-request') return formatPlanDecisionRequest(payload);
   return formatTurnComplete(payload, debug);
+}
+
+function mappingKindForEvent(event) {
+  if (event === 'approval-request') return 'approval';
+  if (event === 'plan-decision-request') return 'plan-decision';
+  return 'chat';
 }
 
 export async function notifyEvent(event, payload) {
@@ -159,7 +180,7 @@ export async function notifyEvent(event, payload) {
         tmuxSessionName: payload.tmuxSessionName || '',
         channelId: payload.channelId || config.discordBot.channelId || '',
         event,
-        kind: event === 'approval-request' ? 'approval' : 'chat',
+        kind: mappingKindForEvent(event),
         projectPath: payload.projectPath,
       });
     }
